@@ -1,0 +1,119 @@
+seed: 0
+deterministic: true
+device: cuda
+scientific_run: true
+experiment_label: opt125m-screening
+checkpoint_label: opt125m-main
+output_dir: outputs/hf_opt125m_screening_seed0
+
+model:
+  backend: hf_causal_lm
+  name: facebook/opt-125m
+  revision: 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+  dtype: float32
+  attn_implementation: eager
+  trust_remote_code: false
+
+data:
+  backend: hf_text
+  name: Salesforce/wikitext
+  subset: wikitext-2-raw-v1
+  split: train
+  revision: f776294184f13b8ff2337b3841cf9269a6216d1e
+  tokenizer: facebook/opt-125m
+  tokenizer_revision: 27dcfa74d334bc871f3234de431e71c6eeba5dd6
+  text_field: text
+  order_seed: 1729
+  shuffle: true
+  packing: true
+  max_source_rows: 1024
+  max_examples: 256
+  batch_size: 4
+  seq_len: 128
+  num_workers: 0
+
+blocks:
+  include:
+    - 'model\.decoder\.layers\..*\.(self_attn\.(q_proj|out_proj))\.weight'
+  types: [attn_q, attn_o]
+  max_blocks: 4
+  max_numel: 1000000
+  split_fused_qkv: true
+  selection_strategy: depth_stratified
+
+analysis:
+  compute_tier: screening
+  assignments: [observed, aligned, reversed]
+
+  covariance:
+    skip_batches: 0
+    num_batches: 24
+    group_size: 4
+    ddof: 0
+
+  curvature:
+    kind: ggn
+    skip_batches: 24
+    num_batches: 2
+    dtype: float32
+    psd_mode: shift
+    ridge: 1.0e-5
+    ridge_mode: relative_max
+    stabilize_lanczos_steps: 24
+    stabilize_lanczos_starts: 1
+    stabilize_rounds: 2
+    lanczos_steps: 48
+    lanczos_starts: 1
+    partial_trace_probes: 16
+
+  condition:
+    relative_floor: 1.0e-7
+    fallback_tau: 1.0e-4
+    tau_sweep: [1.0e-3, 3.0e-4, 1.0e-4, 3.0e-5]
+
+  preconditioners:
+    adam:
+      damping_coefficient: 1.0e-3
+      damping_statistic: median
+      damping_min: 1.0e-12
+      relative_floor: 64.0
+      absolute_floor: 0.0
+    shampoo:
+      damping_coefficient: 1.0e-3
+      damping_statistic: lambda_max
+      damping_min: 1.0e-12
+      factor_exponent: 0.25
+      eig_floor: 0.0
+      relative_eig_floor: 64.0
+
+  factor_diagnostics:
+    max_full_eigh_dim: 1024
+    approx_eig_k: 64
+    curvature_rel_floor: 1.0e-6
+
+  bootstrap:
+    reps: 0
+    diagnostics: delta_only
+    lanczos_steps: 12
+    lanczos_starts: 1
+    alpha: 0.05
+    minimum_reps: 100
+
+  interventions:
+    enabled: false
+  alpha_sweep:
+    enabled: false
+    values: [0.25, 0.5]
+  damping_sweep:
+    enabled: false
+    coefficients: [0.0, 0.01, 0.1, 1.0]
+
+  reliability:
+    min_r2: 0.5
+    max_commutator: 0.5
+    max_shift_ratio: 0.25
+    max_min_ritz_residual_over_min: 0.25
+    max_max_ritz_residual_over_max: 0.01
+    sign_zero_tol: 1.0e-8
+    max_factor_negative_mass: 0.05
+    max_factor_eigen_residual: 0.01

@@ -1,0 +1,15 @@
+output_dir: outputs/synthetic_theory
+
+synthetic:
+  tolerance: 1.0e-8
+  kappa_values: [4.0, 16.0, 64.0]
+  r_values: [1.0, 2.0]
+  alpha_values: [0.25, 0.5]
+  rho_values: [0.0, 1.0, 256.0, 65536.0]
+  chebyshev:
+    K_values: [4.0, 16.0, 64.0, 256.0]
+    T_values: [2, 3, 4, 8]
+    tolerance: 1.0e-8
+  theorem1:
+    chi_values: [4.0, 16.0, 64.0]
+    lambda_values: [0.0, 1.0, 256.0]

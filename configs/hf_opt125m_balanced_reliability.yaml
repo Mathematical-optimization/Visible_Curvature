@@ -1,0 +1,57 @@
+# Balanced reliability policy (B): adaptive endpoint/probe budgets plus a
+# conditional high-start lower-tail refinement.  Point estimates are only
+# promoted when native Ritz checks and across-budget stability both pass.
+base_config: configs/hf_opt125m_confirmatory.yaml
+output_root: outputs/hf_opt125m_balanced_seed0
+python_executable: python
+final_scientific_run: true
+reuse_completed_stages: false
+reuse_completed_final: false
+
+# Optional seed/block/output overrides are recursively merged into base_config.
+base_overrides:
+  seed: 0
+
+primary:
+  covariance_moment: centered
+  assignment: observed
+  alpha: 0.25
+
+reliability:
+  endpoint_steps: [64, 96, 128, 192, 256]
+  endpoint_starts: [2, 2, 2, 3, 4]
+  partial_trace_probes: [32, 64, 128, 256]
+  minimum_stage_count: 2
+
+  # A final endpoint must pass the core Ritz certificate and agree with the
+  # preceding budget.  Stability does not replace the native residual check.
+  k_relative_change_tolerance: 0.05
+  delta_g_absolute_change_tolerance: 0.05
+
+  # The exact GGN partial traces are PSD.  Negative mass is therefore treated
+  # as Monte-Carlo error and must be both small and stable across probe budgets.
+  maximum_partial_trace_negative_mass: 0.05
+  negative_mass_change_tolerance: 0.02
+
+  # Intervention eigenbases must be stable, not merely nearly PSD.
+  partial_trace_matrix_relative_tolerance: 0.10
+  partial_trace_subspace_projector_tolerance: 0.10
+  intervention_factor_relative_tolerance: 0.10
+  partial_trace_cluster_relative_gap: 1.0e-4
+  require_partial_trace_artifacts: true
+
+  # Applied to analysis.curvature.ridge with ridge_mode=relative_max. The
+  # first stage calibrates a blockwise PSD-floor shift; that shift is then frozen
+  # and recorded for every later diagnostic and final stage.
+  fixed_relative_ridge: 1.0e-5
+
+  lower_tail_refinement:
+    enabled: true
+    always_run: false
+    steps: 256
+    starts: 6
+    partial_trace_probes: 256
+
+  final_bootstrap_reps: 100
+  bootstrap_minimum_finite_reps: 100
+  zero_tolerance: 1.0e-10

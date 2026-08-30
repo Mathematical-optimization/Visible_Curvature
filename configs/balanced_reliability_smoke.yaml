@@ -1,0 +1,31 @@
+base_config: configs/smoke.yaml
+output_root: outputs/balanced_reliability_smoke
+python_executable: python
+final_scientific_run: false
+reuse_completed_stages: false
+reuse_completed_final: false
+base_overrides:
+  seed: 0
+primary:
+  covariance_moment: centered
+  assignment: observed
+  alpha: 0.25
+reliability:
+  endpoint_steps: [2, 3]
+  endpoint_starts: [1, 1]
+  partial_trace_probes: [1, 2]
+  minimum_stage_count: 2
+  k_relative_change_tolerance: 1.0
+  delta_g_absolute_change_tolerance: 1.0
+  maximum_partial_trace_negative_mass: 1.0
+  negative_mass_change_tolerance: 1.0
+  partial_trace_matrix_relative_tolerance: 1.0
+  partial_trace_subspace_projector_tolerance: 1.0
+  intervention_factor_relative_tolerance: 1.0
+  partial_trace_cluster_relative_gap: 1.0e-4
+  require_partial_trace_artifacts: true
+  lower_tail_refinement:
+    enabled: false
+  final_bootstrap_reps: 4
+  bootstrap_minimum_finite_reps: 0
+  zero_tolerance: 1.0e-10

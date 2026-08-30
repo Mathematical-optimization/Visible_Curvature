@@ -1,0 +1,113 @@
+seed: 7
+deterministic: true
+device: cpu
+scientific_run: false
+experiment_label: focused-smoke
+output_dir: outputs/smoke
+
+model:
+  backend: tiny_causal_lm
+  dtype: float32
+  vocab_size: 12
+  d_model: 2
+  n_heads: 1
+  hidden: 3
+  n_layers: 1
+
+data:
+  backend: synthetic_tokens
+  content_seed: 11
+  order_seed: 17
+  num_examples: 8
+  batch_size: 2
+  seq_len: 4
+  vocab_size: 12
+  shuffle: false
+
+blocks:
+  include:
+    - 'layers\.0\.attn\.q_proj\.weight'
+  exclude: []
+  max_blocks: 1
+  split_fused_qkv: true
+  selection_strategy: first
+
+analysis:
+  compute_tier: debug
+  assignments: [observed, aligned, reversed]
+
+  covariance:
+    skip_batches: 0
+    num_batches: 2
+    group_size: 1
+    ddof: 0
+
+  curvature:
+    kind: ggn
+    skip_batches: 2
+    num_batches: 1
+    dtype: float32
+    psd_mode: shift
+    ridge: 1.0e-4
+    ridge_mode: relative_max
+    stabilize_lanczos_steps: 3
+    stabilize_lanczos_starts: 1
+    stabilize_rounds: 1
+    lanczos_steps: 3
+    lanczos_starts: 1
+    partial_trace_probes: 2
+
+  condition:
+    relative_floor: 1.0e-7
+    fallback_tau: 1.0e-4
+    tau_sweep: [1.0e-3, 1.0e-4, 1.0e-5]
+
+  preconditioners:
+    adam:
+      damping_coefficient: 1.0e-3
+      damping_statistic: median
+      damping_min: 1.0e-8
+      relative_floor: 64.0
+      absolute_floor: 0.0
+    shampoo:
+      damping_coefficient: 1.0e-3
+      damping_statistic: lambda_max
+      damping_min: 1.0e-8
+      factor_exponent: 0.25
+      eig_floor: 0.0
+      relative_eig_floor: 64.0
+
+  factor_diagnostics:
+    max_full_eigh_dim: 128
+    approx_eig_k: 16
+    curvature_rel_floor: 1.0e-6
+
+  bootstrap:
+    reps: 2
+    diagnostics: delta_only
+    lanczos_steps: 2
+    lanczos_starts: 1
+    alpha: 0.1
+    minimum_reps: 2
+
+  interventions:
+    enabled: true
+
+  alpha_sweep:
+    enabled: true
+    values: [0.25, 0.5]
+
+  damping_sweep:
+    enabled: true
+    modes: [joint, shampoo_only]
+    coefficients: [0.0, 0.1]
+
+  reliability:
+    min_r2: -1.0
+    max_commutator: 2.0
+    max_shift_ratio: 1.0
+    max_min_ritz_residual_over_min: 1.0
+    max_max_ritz_residual_over_max: 1.0
+    sign_zero_tol: 1.0e-12
+    max_factor_negative_mass: 1.0
+    max_factor_eigen_residual: 1.0
