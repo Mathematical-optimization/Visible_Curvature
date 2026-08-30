@@ -66,6 +66,8 @@ def test_confirmatory_has_only_required_controls_and_bounded_budget():
     assert analysis["alpha_sweep"]["values"] == [0.25, 0.5]
     assert analysis["damping_sweep"]["coefficients"] == [0.0, 0.01, 0.1, 1.0]
     assert analysis["damping_sweep"]["modes"] == ["joint", "shampoo_only"]
-    assert cfg["blocks"]["max_blocks"] <= 2
+    assert cfg["blocks"]["max_blocks"] == 12
+    assert len(cfg["blocks"]["exact_names"]) == 12
+    assert len(analysis["controls"]["block_names"]) == 4
     assert analysis["curvature"]["lanczos_steps"] <= 96
     assert analysis["curvature"]["partial_trace_probes"] <= 48

@@ -33,6 +33,7 @@ def test_synthetic_runner_writes_required_files_and_theorem1_sign_reversal(tmp_p
     assert summary_path.is_file()
     assert (out / "flat_kronecker_conditioning_results.csv").is_file()
     assert (out / "chebyshev_certificates.csv").is_file()
+    assert (out / "integrated_theorem3_witness.csv").is_file()
     assert (out / "resolved_config.yaml").is_file()
 
     frame = pd.read_csv(results_path)
@@ -51,6 +52,8 @@ def test_synthetic_runner_writes_required_files_and_theorem1_sign_reversal(tmp_p
     summary = json.loads(summary_path.read_text())
     assert summary["chebyshev_all_checks_passed"] is True
     assert summary["chebyshev_certificate_count"] == 4
+    assert summary["integrated_theorem3_all_checks_passed"] is True
+    assert summary["integrated_theorem3_witness_count"] >= 1
     assert summary["all_checks_passed"] is True
 
 

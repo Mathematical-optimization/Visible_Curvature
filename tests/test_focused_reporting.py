@@ -11,7 +11,7 @@ from visible_curvature.figures import make_all_frozen_figures
 from visible_curvature.paper_export import DEBUG_WATERMARK, export_paper_assets
 
 
-def _write_run(root: Path, seed: int, *, scientific: bool = True, failed: bool = False) -> Path:
+def _write_run(root: Path, seed: int, *, scientific: bool = True, failed: bool = False, environment: str = "environment-shared") -> Path:
     run = root / f"run{seed}"
     run.mkdir(parents=True)
     protocol = "protocol-shared"
@@ -83,6 +83,7 @@ def _write_run(root: Path, seed: int, *, scientific: bool = True, failed: bool =
         "config_hash": f"config-{seed}",
         "protocol_hash": protocol,
         "runtime_identity_sha256": runtime,
+        "runtime_environment_sha256": environment,
         "scientific_run": scientific,
         "synthetic_backend": not scientific,
         "experiment_tier": "confirmatory" if scientific else "debug",
@@ -99,6 +100,15 @@ def _write_run(root: Path, seed: int, *, scientific: bool = True, failed: bool =
     (run / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return run
 
+
+
+def test_aggregate_rejects_incompatible_runtime_environments(tmp_path: Path):
+    runs = [
+        _write_run(tmp_path, 0, environment="environment-a"),
+        _write_run(tmp_path, 1, environment="environment-b"),
+    ]
+    with pytest.raises(ValueError, match="runtime environments"):
+        aggregate_frozen_runs(runs, tmp_path / "aggregate", minimum_seed_count=2)
 
 def test_aggregate_preserves_focused_tables_and_seed_consensus(tmp_path: Path):
     runs = [_write_run(tmp_path, seed) for seed in range(3)]

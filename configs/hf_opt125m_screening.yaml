@@ -108,6 +108,9 @@ analysis:
     enabled: false
     coefficients: [0.0, 0.01, 0.1, 1.0]
 
+  ridge_sensitivity:
+    enabled: false
+    coefficients: [1.0e-6, 1.0e-5, 1.0e-4]
   reliability:
     min_r2: 0.5
     max_commutator: 0.5
@@ -117,3 +120,6 @@ analysis:
     sign_zero_tol: 1.0e-8
     max_factor_negative_mass: 0.05
     max_factor_eigen_residual: 0.01
+    min_elasticity_modes: 4
+    min_curvature_log_width: 1.0e-3
+    max_preconditioner_floored_fraction: 0.25

@@ -10,6 +10,7 @@ def _valid_scientific_config():
             "backend": "hf_causal_lm",
             "revision": "a" * 40,
         },
+        "blocks": {"exact_names": ["model.layer.weight"]},
         "data": {
             "backend": "hf_text",
             "revision": "b" * 40,

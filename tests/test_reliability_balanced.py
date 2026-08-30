@@ -56,9 +56,9 @@ def test_prepare_diagnostic_config_disables_expensive_controls():
 def test_endpoint_certificate_requires_native_and_cross_budget_stability():
     rows = pd.DataFrame([
         {"block_name": "b", "stage_index": 0, "stage_label": "s0", "endpoint_steps": 64, "endpoint_starts": 2, "partial_trace_probes": 32,
-         "K_adam": 100.0, "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": True, "negative_mass_left": .04, "negative_mass_right": .04},
+         "K_adam": 100.0, "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": True, "negative_mass_left": .04, "negative_mass_right": .04, "condition_metric": "ordinary", "fallback_tau": 1e-4},
         {"block_name": "b", "stage_index": 1, "stage_label": "s1", "endpoint_steps": 96, "endpoint_starts": 2, "partial_trace_probes": 64,
-         "K_adam": 102.0, "K_shampoo": 51.0, "delta_g": 0.693, "native_endpoint_reliable": True, "negative_mass_left": .03, "negative_mass_right": .03},
+         "K_adam": 102.0, "K_shampoo": 51.0, "delta_g": 0.693, "native_endpoint_reliable": True, "negative_mass_left": .03, "negative_mass_right": .03, "condition_metric": "ordinary", "fallback_tau": 1e-4},
     ])
     cert = certify_convergence(rows, ReliabilityThresholds())
     assert bool(cert.loc[0, "adaptive_endpoint_certified"])
@@ -68,9 +68,9 @@ def test_endpoint_certificate_requires_native_and_cross_budget_stability():
 def test_native_failure_cannot_be_overridden_by_stability():
     rows = pd.DataFrame([
         {"block_name": "b", "stage_index": 0, "stage_label": "s0", "endpoint_steps": 64, "endpoint_starts": 2, "partial_trace_probes": 32,
-         "K_adam": 100.0, "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": False, "negative_mass_left": .2, "negative_mass_right": .2},
+         "K_adam": 100.0, "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": False, "negative_mass_left": .2, "negative_mass_right": .2, "condition_metric": "ordinary", "fallback_tau": 1e-4},
         {"block_name": "b", "stage_index": 1, "stage_label": "s1", "endpoint_steps": 96, "endpoint_starts": 2, "partial_trace_probes": 64,
-         "K_adam": 100.0, "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": False, "negative_mass_left": .2, "negative_mass_right": .2},
+         "K_adam": 100.0, "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": False, "negative_mass_left": .2, "negative_mass_right": .2, "condition_metric": "ordinary", "fallback_tau": 1e-4},
     ])
     cert = certify_convergence(rows, ReliabilityThresholds())
     assert not bool(cert.loc[0, "adaptive_endpoint_certified"])
@@ -110,12 +110,12 @@ def test_partial_trace_certificate_rejects_rotated_intervention_basis(tmp_path):
          "endpoint_starts": 2, "partial_trace_probes": 32, "K_adam": 100.0,
          "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": True,
          "negative_mass_left": 0.0, "negative_mass_right": 0.0,
-         "partial_trace_artifact": str(first)},
+         "partial_trace_artifact": str(first), "condition_metric": "ordinary", "fallback_tau": 1e-4},
         {"block_name": "b", "stage_index": 1, "stage_label": "s1", "endpoint_steps": 96,
          "endpoint_starts": 2, "partial_trace_probes": 64, "K_adam": 100.0,
          "K_shampoo": 50.0, "delta_g": 0.693, "native_endpoint_reliable": True,
          "negative_mass_left": 0.0, "negative_mass_right": 0.0,
-         "partial_trace_artifact": str(second)},
+         "partial_trace_artifact": str(second), "condition_metric": "ordinary", "fallback_tau": 1e-4},
     ])
     cert = certify_convergence(
         rows,

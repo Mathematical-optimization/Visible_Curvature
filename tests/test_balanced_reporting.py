@@ -19,6 +19,7 @@ def _write_balanced_root(root: Path, seed: int, label: str = "negative") -> Path
         "config_hash": f"config-{seed}",
         "protocol_hash": "protocol-shared",
         "runtime_identity_sha256": "runtime-shared",
+        "runtime_environment_sha256": "environment-shared",
         "seed": seed,
         "block_name": "model.layers.0.attn.weight",
         "block_type": "attn",
@@ -32,12 +33,17 @@ def _write_balanced_root(root: Path, seed: int, label: str = "negative") -> Path
                 "alpha": 0.25,
                 "delta_g": -0.4,
                 "delta_g_predicted": -0.3,
+                "delta_g_predicted_consumption": -0.2,
+                "delta_g_predicted_full_proxy": -0.3,
+                "factor_elasticity_reliable": True,
                 "K_adam": 10.0,
                 "K_shampoo": 15.0,
                 "final_endpoint_numerically_accepted": True,
                 "final_diagnostic_agreement": True,
                 "balanced_primary_reliable": True,
                 "balanced_reliable_ordering": label,
+                "condition_metric": "ordinary",
+                "fallback_tau": 1.0e-4,
             }
         ]
     ).to_csv(final / "canonical_block_metrics.csv", index=False)
@@ -50,6 +56,8 @@ def _write_balanced_root(root: Path, seed: int, label: str = "negative") -> Path
                 "alpha": 0.25,
                 "damping_coefficient": 0.001,
                 "delta_g": value,
+                "condition_metric": "ordinary",
+                "fallback_tau": 1.0e-4,
                 "balanced_reliable_for_inference": True,
             }
             for assignment, value in [
@@ -82,6 +90,7 @@ def _write_balanced_root(root: Path, seed: int, label: str = "negative") -> Path
         "status": "complete",
         "protocol_hash": "protocol-shared",
         "runtime_identity_sha256": "runtime-shared",
+        "runtime_environment_sha256": "environment-shared",
         "scientific_run": True,
         "synthetic_backend": False,
         "experiment_tier": "confirmatory",
@@ -124,6 +133,16 @@ def test_aggregate_uses_balanced_ordering_from_canonical_table(tmp_path: Path):
     summary = pd.read_csv(output / "paired_seed_summary.csv")
     assert summary.iloc[0]["reliable_ordering"] == "negative"
     assert (output / "canonical_block_metrics.csv").exists()
+    prediction_rows = pd.read_csv(output / "elasticity_prediction_rows.csv")
+    prediction_summary = pd.read_csv(output / "elasticity_prediction_summary.csv")
+    contrasts = pd.read_csv(output / "paired_control_contrasts.csv")
+    assert prediction_rows["prediction_eligible"].all()
+    assert set(prediction_summary["predictor_name"]) == {"consumption", "full_proxy"}
+    assert {
+        "assignment_aligned_minus_reversed",
+        "alpha_signed_change_from_practical",
+        "damping_change_from_minimum",
+    }.issubset(set(contrasts["contrast_type"]))
 
 
 def test_scientific_export_rejects_legacy_aggregate(tmp_path: Path):
@@ -172,3 +191,11 @@ def test_balanced_aggregate_is_eligible_for_export(tmp_path: Path):
     paths = export_paper_assets(output, tmp_path / "paper")
     assert paths
     assert all(path.exists() for path in paths)
+    names = {path.name for path in paths}
+    assert {
+        "elasticity_prediction_autogen.tex",
+        "paired_controls_autogen.tex",
+    }.issubset(names)
+    block_table = (tmp_path / "paper" / "block_gain_autogen.tex").read_text()
+    assert "Metric" in block_table
+    assert "$K_{\\mathrm{Ad}}$" in block_table

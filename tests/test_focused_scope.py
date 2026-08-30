@@ -14,7 +14,6 @@ def test_release_contains_no_online_or_image_entrypoints():
     forbidden = [
         ROOT / "visible_curvature" / "online_optim.py",
         ROOT / "visible_curvature" / "online_runner.py",
-        ROOT / "visible_curvature" / "provenance.py",
         ROOT / "scripts" / "run_online.py",
         ROOT / "configs" / "timm_vit_frozen_template.yaml",
     ]

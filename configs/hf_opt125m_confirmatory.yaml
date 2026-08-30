@@ -5,7 +5,6 @@ scientific_run: true
 experiment_label: opt125m-confirmatory
 checkpoint_label: opt125m-main
 output_dir: outputs/hf_opt125m_confirmatory_seed0
-
 model:
   backend: hf_causal_lm
   name: facebook/opt-125m
@@ -13,7 +12,6 @@ model:
   dtype: float32
   attn_implementation: eager
   trust_remote_code: false
-
 data:
   backend: hf_text
   name: Salesforce/wikitext
@@ -31,33 +29,45 @@ data:
   batch_size: 4
   seq_len: 128
   num_workers: 0
-
 blocks:
-  include:
-    - 'model\.decoder\.layers\..*\.(self_attn\.(q_proj|out_proj))\.weight'
-  types: [attn_q, attn_o]
-  max_blocks: 2
+  types:
+  - attn_q
+  - attn_o
+  max_blocks: 12
   max_numel: 1000000
   split_fused_qkv: true
-  selection_strategy: depth_stratified
-
+  selection_strategy: first
+  exact_names:
+  - model.decoder.layers.0.self_attn.q_proj.weight
+  - model.decoder.layers.0.self_attn.out_proj.weight
+  - model.decoder.layers.2.self_attn.q_proj.weight
+  - model.decoder.layers.2.self_attn.out_proj.weight
+  - model.decoder.layers.4.self_attn.q_proj.weight
+  - model.decoder.layers.4.self_attn.out_proj.weight
+  - model.decoder.layers.6.self_attn.q_proj.weight
+  - model.decoder.layers.6.self_attn.out_proj.weight
+  - model.decoder.layers.8.self_attn.q_proj.weight
+  - model.decoder.layers.8.self_attn.out_proj.weight
+  - model.decoder.layers.11.self_attn.q_proj.weight
+  - model.decoder.layers.11.self_attn.out_proj.weight
 analysis:
   compute_tier: confirmatory
-  assignments: [observed, aligned, reversed]
-
+  assignments:
+  - observed
+  - aligned
+  - reversed
   covariance:
     skip_batches: 0
     num_batches: 48
     group_size: 4
     ddof: 0
-
   curvature:
     kind: ggn
     skip_batches: 48
     num_batches: 4
     dtype: float32
     psd_mode: shift
-    ridge: 1.0e-5
+    ridge: 1.0e-05
     ridge_mode: relative_max
     stabilize_lanczos_steps: 32
     stabilize_lanczos_starts: 1
@@ -65,32 +75,33 @@ analysis:
     lanczos_steps: 64
     lanczos_starts: 2
     partial_trace_probes: 32
-
   condition:
-    relative_floor: 1.0e-7
-    fallback_tau: 1.0e-4
-    tau_sweep: [1.0e-3, 3.0e-4, 1.0e-4, 3.0e-5, 1.0e-5]
-
+    relative_floor: 1.0e-07
+    fallback_tau: 0.0001
+    tau_sweep:
+    - 0.001
+    - 0.0003
+    - 0.0001
+    - 3.0e-05
+    - 1.0e-05
   preconditioners:
     adam:
-      damping_coefficient: 1.0e-3
+      damping_coefficient: 0.001
       damping_statistic: median
       damping_min: 1.0e-12
       relative_floor: 64.0
       absolute_floor: 0.0
     shampoo:
-      damping_coefficient: 1.0e-3
+      damping_coefficient: 0.001
       damping_statistic: lambda_max
       damping_min: 1.0e-12
       factor_exponent: 0.25
       eig_floor: 0.0
       relative_eig_floor: 64.0
-
   factor_diagnostics:
     max_full_eigh_dim: 1024
     approx_eig_k: 96
-    curvature_rel_floor: 1.0e-6
-
+    curvature_rel_floor: 1.0e-06
   bootstrap:
     reps: 100
     diagnostics: delta_only
@@ -98,23 +109,41 @@ analysis:
     lanczos_starts: 1
     alpha: 0.05
     minimum_reps: 100
-
   interventions:
     enabled: true
   alpha_sweep:
     enabled: true
-    values: [0.25, 0.5]
+    values:
+    - 0.25
+    - 0.5
   damping_sweep:
     enabled: true
-    modes: [joint, shampoo_only]
-    coefficients: [0.0, 0.01, 0.1, 1.0]
-
+    modes:
+    - joint
+    - shampoo_only
+    coefficients:
+    - 0.0
+    - 0.01
+    - 0.1
+    - 1.0
+  ridge_sensitivity:
+    enabled: true
+    coefficients: [1.0e-6, 1.0e-5, 1.0e-4]
   reliability:
     min_r2: 0.5
     max_commutator: 0.5
     max_shift_ratio: 0.25
     max_min_ritz_residual_over_min: 0.25
     max_max_ritz_residual_over_max: 0.01
-    sign_zero_tol: 1.0e-8
+    sign_zero_tol: 1.0e-08
     max_factor_negative_mass: 0.05
     max_factor_eigen_residual: 0.01
+    min_elasticity_modes: 4
+    min_curvature_log_width: 1.0e-3
+    max_preconditioner_floored_fraction: 0.25
+  controls:
+    block_names:
+    - model.decoder.layers.0.self_attn.q_proj.weight
+    - model.decoder.layers.0.self_attn.out_proj.weight
+    - model.decoder.layers.11.self_attn.q_proj.weight
+    - model.decoder.layers.11.self_attn.out_proj.weight

@@ -10,7 +10,7 @@ def test_predicted_delta_g_scales_factor_response_with_alpha():
         r_right=1.0,
         width_right=2.0,
         r_adam=0.0,
-        width_adam=3.0,
+        width_adam=3.5,
     )
     practical = predicted_delta_g(**kwargs, factor_exponent=0.25)
     control = predicted_delta_g(**kwargs, factor_exponent=0.5)

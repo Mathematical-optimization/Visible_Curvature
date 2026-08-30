@@ -100,6 +100,10 @@ def _config(tmp_path: Path) -> dict:
             "interventions": {"enabled": True},
             "alpha_sweep": {"enabled": True, "values": [0.25, 0.5]},
             "damping_sweep": {"enabled": True, "coefficients": [0.0, 0.1]},
+            "ridge_sensitivity": {
+                "enabled": True,
+                "coefficients": [1.0e-5, 1.0e-4],
+            },
             "reliability": {
                 "max_shift_ratio": 1.0,
                 "max_min_ritz_residual_over_min": 1.0,
@@ -121,10 +125,12 @@ def test_focused_runner_writes_only_required_experiment_tables(tmp_path):
         "interventions.csv",
         "alpha_sweep.csv",
         "damping_sweep.csv",
+        "ridge_sweep.csv",
         "block_failures.csv",
         "run_manifest.json",
         "summary.json",
         "resolved_config.yaml",
+        "runtime_provenance.json",
     }
     assert required.issubset({path.name for path in output.iterdir()})
     assert not (output / "frozen_trajectories.csv").exists()
@@ -143,6 +149,12 @@ def test_focused_runner_writes_only_required_experiment_tables(tmp_path):
     ):
         assert column in blocks.columns
     assert not any(column.lower().startswith("nci_") for column in blocks.columns)
+    assert int(blocks["lanczos_spectrum_cache_hits"].max()) > 0
+    assert int(blocks["lanczos_spectrum_cache_misses"].max()) > 0
+    assert (
+        blocks["lanczos_spectrum_cache_entries"]
+        == blocks["lanczos_spectrum_cache_misses"]
+    ).all()
 
     interventions = pd.read_csv(output / "interventions.csv")
     assert set(interventions["assignment"]) == {"observed", "aligned", "reversed"}
@@ -151,6 +163,9 @@ def test_focused_runner_writes_only_required_experiment_tables(tmp_path):
     assert set(alpha["assignment"]) == {"observed", "aligned", "reversed"}
     damping = pd.read_csv(output / "damping_sweep.csv")
     assert set(damping["damping_coefficient"]) == {0.0, 0.1}
+    ridge = pd.read_csv(output / "ridge_sweep.csv")
+    assert set(ridge["ridge_coefficient"]) == {1.0e-5, 1.0e-4}
+    assert set(ridge["assignment"]) == {"observed"}
 
     bootstrap = pd.read_csv(output / "bootstrap_metrics.csv")
     assert set(bootstrap["covariance_moment"]) == {"centered"}
@@ -160,7 +175,12 @@ def test_focused_runner_writes_only_required_experiment_tables(tmp_path):
 
     manifest = json.loads((output / "run_manifest.json").read_text())
     assert manifest["status"] == "complete"
+    assert manifest["package_version"] == "1.3.0"
     assert manifest["data"]["order_seed"] == 17
+    assert manifest["runtime_environment_sha256"]
+    provenance = json.loads((output / "runtime_provenance.json").read_text())
+    assert provenance["runtime_environment_sha256"] == manifest["runtime_environment_sha256"]
+    assert "tree_sha256" in provenance["source"]
 
 
 def test_removed_intervention_modes_are_rejected():

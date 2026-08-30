@@ -27,6 +27,11 @@ primary:
   alpha: 0.25
 
 reliability:
+  # Ordinary residual condition numbers are the primary theoretical
+  # estimand. Truncated lower-tail diagnostics remain secondary unless
+  # this switch is explicitly enabled in a separately preregistered study.
+  allow_truncated_primary: false
+
   endpoint_steps: [64, 96, 128, 192, 256]
   endpoint_starts: [2, 2, 2, 3, 4]
   partial_trace_probes: [32, 64, 128, 256]

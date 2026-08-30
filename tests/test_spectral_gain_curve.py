@@ -51,6 +51,7 @@ def _scientific_config(*, num_batches: int, group_size: int) -> dict:
             "backend": "hf_causal_lm",
             "revision": commit,
         },
+        "blocks": {"exact_names": ["model.layer.weight"]},
         "data": {
             "backend": "hf_text",
             "revision": commit,

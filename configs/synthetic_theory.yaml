@@ -6,6 +6,12 @@ synthetic:
   r_values: [1.0, 2.0]
   alpha_values: [0.25, 0.5]
   rho_values: [0.0, 1.0, 256.0, 65536.0]
+  integrated_theorem3:
+    kappa_values: [4.0, 16.0]
+    r_values: [1.0, 2.0]
+    alpha_values: [0.25]
+    rho_values: [0.0, 1.0]
+    T_values: [2, 4]
   chebyshev:
     K_values: [4.0, 16.0, 64.0, 256.0]
     T_values: [2, 3, 4, 8]

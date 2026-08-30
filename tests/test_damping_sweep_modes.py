@@ -76,3 +76,16 @@ def test_damping_sweep_plan_separates_joint_and_mechanistic_modes():
             "shampoo_damping_coefficient": 1.0,
         },
     ]
+
+
+def test_damping_control_estimands_differ_by_sweep_mode():
+    from visible_curvature.analysis_runner import _control_estimand_record
+
+    joint = _control_estimand_record(
+        sweep_mode="joint", delta_g=-0.4, G_adam=0.3, G_shampoo=-0.1
+    )
+    shampoo_only = _control_estimand_record(
+        sweep_mode="shampoo_only", delta_g=-0.4, G_adam=0.3, G_shampoo=-0.1
+    )
+    assert joint["control_estimand"] == "abs_delta_g"
+    assert shampoo_only["control_estimand"] == "abs_g_shampoo"
