@@ -1,4 +1,4 @@
-# Visible-Curvature Experiments — Canonical Balanced v1.2.0
+# Visible-Curvature Experiments — Canonical Balanced v1.2.1
 
 This repository contains the source code for the frozen-operator experiments accompanying the ICLR 2027 submission **“Optimizer-Visible Curvature: Information Limits and Minimax Order Reversals.”**
 
@@ -16,9 +16,11 @@ K(P,H)=\operatorname{cond}\!\left(P^{1/2}HP^{1/2}\right),
 
 The checkpoint curvature is an empirical **generalized Gauss–Newton (GGN)** operator for causal-language-model cross-entropy. It is not presented as the full nonconvex Hessian. The package does not establish online optimizer dominance, stochastic-risk dominance, or wall-clock superiority.
 
-## 1. What v1.2.0 contains
+## 1. What v1.2.1 contains
 
 The release has three connected workflows.
+
+v1.2.1 is a performance-and-safety patch over v1.2.0. It computes clustered-subspace projector distances from principal-angle overlap matrices instead of repeatedly forming ambient-size projectors, preventing the CPU-only reliability phase from performing hundreds of dense `768 x 768` SVDs. It also places a process-lifetime lock on each balanced output root, prints explicit GPU/core versus CPU-certification progress, and supports seed-specific GPU/thread pinning in generated policies.
 
 1. **Synthetic conditioning verification**
    - Theorem 1 aligned/scalar/reversed Adam-form sign reversal.
@@ -64,7 +66,7 @@ For Hugging Face checkpoint experiments:
 pip install -e '.[network,dev]'
 ```
 
-The core dependencies are NumPy, pandas, SciPy, matplotlib, PyYAML, and PyTorch. No new runtime dependency was introduced in v1.2.0.
+The core dependencies are NumPy, pandas, SciPy, matplotlib, PyYAML, and PyTorch. No new runtime dependency was introduced in v1.2.1.
 
 ## 3. Software verification
 
@@ -140,10 +142,12 @@ Create an exact-block confirmatory YAML after screening, then generate at least 
 ```bash
 python scripts/make_balanced_policies.py \
   --base-config configs/generated/hf_opt125m_confirmatory_exact_blocks.yaml \
-  --seeds 0 1 2
+  --seeds 0 1 2 \
+  --gpus 0 1 2 \
+  --cpu-threads 8
 ```
 
-The generated policy paths are written under `configs/generated_balanced/` by default.
+The generated policy paths are written under `configs/generated_balanced/` by default. `--gpus` writes one `CUDA_VISIBLE_DEVICES` value per seed, so concurrently launched seeds do not all select physical GPU 0. `--cpu-threads` writes the same BLAS/OpenMP cap to each policy. Omit these two options for a sequential single-GPU run.
 
 ### 5.3 Run balanced confirmatory seeds
 
@@ -157,6 +161,8 @@ done
 ```
 
 A completed but numerically inconclusive run is a valid outcome. Use `--require-scientific-acceptance` only as a release gate after the protocol is frozen; do not tune numerical settings until a desired sign appears.
+
+Each output root is protected by `.balanced_run.lock`. A second live process targeting the same seed root fails immediately instead of racing on diagnostic or final files. The orchestrator now reports whether it is running a child core analysis (normally GPU-active) or parent-side endpoint/partial-trace certification (CPU-only), so a temporary absence of `nvidia-smi` memory use is distinguishable from a stalled process.
 
 ## 6. Balanced reliability protocol
 

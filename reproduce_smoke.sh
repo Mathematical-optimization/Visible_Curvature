@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${ROOT}"
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD="${PYTEST_DISABLE_PLUGIN_AUTOLOAD:-1}"
 rm -rf \
   outputs/synthetic_theory \
   outputs/smoke \
@@ -62,4 +63,4 @@ python scripts/export_paper_assets.py \
 grep -q "DEBUG EXPORT -- NOT SCIENTIFIC EVIDENCE" \
   outputs/smoke_paper/debug/network_results_autogen.tex
 
-echo "Canonical Balanced v1.2.0 focused verification complete"
+echo "Canonical Balanced v1.2.1 focused verification complete"

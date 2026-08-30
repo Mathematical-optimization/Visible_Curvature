@@ -1,4 +1,18 @@
-# Visible Curvature Experiment Code — Canonical Balanced v1.2.0
+# Visible Curvature Experiment Code — Canonical Balanced v1.2.1
+
+## v1.2.1 — Partial-trace performance and execution safety
+
+v1.2.1은 v1.2.0의 scientific protocol과 수치 판정 기준을 유지하면서, 실제 OPT-125M 실행에서 확인된 CPU 병목과 concurrent-output 위험을 수정한 patch release다.
+
+### 핵심 수정
+
+1. Clustered eigenspace distance를 `||UU^T-VV^T||_2`의 full projector SVD로 계산하지 않고, 동일한 principal-angle identity `sqrt(1-sigma_min(U^T V)^2)`로 계산한다. Singleton cluster가 많을 때 cluster마다 `768 x 768` SVD를 반복하던 병목을 제거한다.
+2. 각 balanced output root에 process-lifetime POSIX lock을 적용한다. 동일 seed/output root를 두 orchestrator가 동시에 쓰면 두 번째 process가 즉시 실패한다.
+3. Core child analysis와 CPU-only endpoint/partial-trace certification의 시작·종료를 timestamp와 PID로 출력한다. GPU 메모리가 비는 정상적인 parent-side certification 구간을 명확히 구분한다.
+4. `make_balanced_policies.py`에 `--gpus`와 `--cpu-threads`를 추가한다. 생성된 policy의 `runtime_env`가 child core process에 전달된다.
+5. Performance regression, projector-distance equivalence, output-lock, GPU/thread policy generation 테스트를 추가한다.
+
+## v1.2.0 — Canonical balanced scientific pipeline
 
 ## 목적
 

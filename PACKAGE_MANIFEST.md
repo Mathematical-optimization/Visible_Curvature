@@ -1,4 +1,4 @@
-# Package Manifest — Canonical Balanced v1.2.0
+# Package Manifest — Canonical Balanced v1.2.1
 
 ## Public runners
 
@@ -34,6 +34,8 @@
 - `diagnostics.py` — elasticity, overlap, commutator, and signed predictors
 - `interventions.py` — observed/aligned/reversed factor assignment
 - `partial_trace_stability.py` — matrix, clustered-subspace, and factor stability checks
+- `run_lock.py` — process-lifetime exclusive lock for each balanced output root
+- `runtime_bootstrap.py` — applies GPU and CPU-thread policy settings before numerical imports
 - `analysis_runner.py` — frozen checkpoint orchestration and artifact persistence
 - `reliability_balanced.py` — nested budgets, canonical promotion, and scientific status
 - `chebyshev.py` — weighted-Chebyshev minimax certificate

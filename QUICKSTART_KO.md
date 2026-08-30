@@ -1,4 +1,4 @@
-# 빠른 시작 — Canonical Balanced v1.2.0
+# 빠른 시작 — Canonical Balanced v1.2.1
 
 ## 1. 설치
 
@@ -73,8 +73,12 @@ Model, tokenizer, dataset revision은 40자리 immutable commit으로 고정하�
 ```bash
 python scripts/make_balanced_policies.py \
   --base-config configs/generated/hf_opt125m_confirmatory_exact_blocks.yaml \
-  --seeds 0 1 2
+  --seeds 0 1 2 \
+  --gpus 0 1 2 \
+  --cpu-threads 8
 ```
+
+`--gpus`는 seed별 child process에 서로 다른 `CUDA_VISIBLE_DEVICES`를 기록한다. 여러 seed를 병렬 실행할 때 세 process가 모두 GPU 0으로 몰리는 것을 방지한다. 순차 단일-GPU 실행이면 `--gpus`와 `--cpu-threads`를 생략해도 된다. 동일 output root를 두 process가 동시에 사용하면 `.balanced_run.lock`이 두 번째 process를 즉시 거부한다.
 
 ## 7. Balanced confirmatory 실행
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.1 — Partial-trace performance and execution safety
+
+- Replace per-cluster ambient projector spectral norms with the equivalent principal-angle overlap formula, eliminating repeated full-size SVDs during CPU-only partial-trace certification.
+- Add regression tests for projector-distance equivalence and the no-full-projector performance contract.
+- Add a process-lifetime exclusive lock for each balanced output root, preventing duplicate seed writers from corrupting artifacts.
+- Emit timestamped progress messages that distinguish child core analysis from parent-side CPU certification.
+- Allow generated seed policies to pin `CUDA_VISIBLE_DEVICES` and BLAS/OpenMP thread counts through `--gpus` and `--cpu-threads`.
+- Bump package and release documentation to v1.2.1 without changing the scientific estimand or acceptance thresholds.
+
 ## v1.2.0 — Canonical balanced scientific pipeline
 
 ### Reliability and operator consistency

@@ -1,4 +1,4 @@
-# Author Run Checklist — Canonical Balanced v1.2.0
+# Author Run Checklist — Canonical Balanced v1.2.1
 
 ## A. 코드 및 release
 
@@ -7,7 +7,7 @@
 - [ ] `bash reproduce_smoke.sh` 통과
 - [ ] `bash reproduce_balanced_smoke.sh`에서 `pipeline_status=complete`
 - [ ] `sha256sum -c SHA256SUMS.txt` 통과
-- [ ] `visible_curvature.__version__`과 `pyproject.toml`이 `1.2.0`
+- [ ] `visible_curvature.__version__`과 `pyproject.toml`이 `1.2.1`
 - [ ] `outputs/synthetic_theory/theory_summary.json`의 `all_checks_passed=true`
 - [ ] `chebyshev_all_checks_passed=true`
 
@@ -16,6 +16,9 @@
 - [ ] Python/PyTorch/CUDA/driver/GPU 정보를 run log에 기록
 - [ ] 한 block pilot으로 GGN matvec 시간과 peak memory 측정
 - [ ] seed별 동일 GPU architecture 사용 여부 기록
+- [ ] 병렬 실행 시 seed별 `CUDA_VISIBLE_DEVICES`가 서로 다름
+- [ ] seed output root당 active orchestrator가 하나뿐임
+- [ ] CPU certification 구간의 BLAS/OpenMP thread cap 기록
 - [ ] output/log/checkpoint 저장 공간 확보
 
 ## C. Scientific provenance
