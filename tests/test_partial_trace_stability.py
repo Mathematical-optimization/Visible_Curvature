@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from visible_curvature.partial_trace_stability import (
@@ -96,3 +97,73 @@ def test_artifact_roundtrip_records_block_and_interventions(tmp_path: Path):
     assert artifact["reversed_right"].shape == (2, 2)
     index = (tmp_path / "index.json").read_text(encoding="utf-8")
     assert "layer.0.weight" in index
+
+
+def test_clustered_subspace_distance_avoids_full_projector_spectral_norm(monkeypatch):
+    from visible_curvature.partial_trace_stability import (
+        _projector_distance_for_clusters,
+    )
+
+    previous = np.diag(np.arange(1.0, 9.0))
+    theta = 0.2
+    rotation = np.eye(8)
+    rotation[:2, :2] = np.array(
+        [
+            [math.cos(theta), -math.sin(theta)],
+            [math.sin(theta), math.cos(theta)],
+        ]
+    )
+    current = rotation @ previous @ rotation.T
+
+    original_norm = np.linalg.norm
+
+    def guarded_norm(value, ord=None, *args, **kwargs):
+        array = np.asarray(value)
+        if ord == 2 and array.ndim == 2 and array.shape == (8, 8):
+            raise AssertionError(
+                "cluster comparison formed a full-size projector spectral norm"
+            )
+        return original_norm(value, ord=ord, *args, **kwargs)
+
+    monkeypatch.setattr(np.linalg, "norm", guarded_norm)
+    distance, partition_ok, reason = _projector_distance_for_clusters(
+        previous,
+        current,
+        relative_gap=1.0e-8,
+    )
+
+    assert partition_ok is True
+    assert reason == ""
+    assert math.isfinite(distance)
+
+
+def test_overlap_formula_matches_explicit_projector_distance():
+    from visible_curvature.partial_trace_stability import (
+        _projector_distance_for_clusters,
+    )
+
+    rng = np.random.default_rng(7)
+    previous_basis, _ = np.linalg.qr(rng.normal(size=(6, 6)))
+    current_basis, _ = np.linalg.qr(rng.normal(size=(6, 6)))
+    values = np.array([1.0, 1.0, 3.0, 3.0, 8.0, 8.0])
+    previous = previous_basis @ np.diag(values) @ previous_basis.T
+    current = current_basis @ np.diag(values) @ current_basis.T
+
+    actual, partition_ok, reason = _projector_distance_for_clusters(
+        previous,
+        current,
+        relative_gap=1.0e-8,
+    )
+
+    expected = 0.0
+    for cluster in (slice(0, 2), slice(2, 4), slice(4, 6)):
+        left = previous_basis[:, cluster]
+        right = current_basis[:, cluster]
+        expected = max(
+            expected,
+            float(np.linalg.norm(left @ left.T - right @ right.T, ord=2)),
+        )
+
+    assert partition_ok is True
+    assert reason == ""
+    assert actual == pytest.approx(expected, abs=1.0e-10)

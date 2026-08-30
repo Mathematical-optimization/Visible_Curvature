@@ -7,10 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_version_and_dependencies_are_focused():
-    assert visible_curvature.__version__ == "1.2.0"
+    assert visible_curvature.__version__ == "1.2.1"
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    assert 'version = "1.2.0"' in pyproject
+    assert 'version = "1.2.1"' in pyproject
     assert "ViT" not in pyproject
     assert "timm" not in pyproject + requirements
     assert "torchvision" not in pyproject + requirements
@@ -51,6 +51,7 @@ def test_smoke_script_uses_exact_debug_watermark_contract():
     assert "run_frozen_analysis.py" in text
     assert "DEBUG EXPORT -- NOT SCIENTIFIC EVIDENCE" in text
     assert "run_online.py" not in text
+    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" in text
 
 
 def test_release_has_no_legacy_plan_or_smoke_wrapper():

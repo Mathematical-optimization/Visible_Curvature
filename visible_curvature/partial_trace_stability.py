@@ -153,26 +153,63 @@ def _cluster_slices(values: np.ndarray, relative_gap: float) -> list[slice]:
     return [slice(starts[i], starts[i + 1]) for i in range(len(starts) - 1)]
 
 
+def _subspace_projector_distance(
+    previous_basis: np.ndarray,
+    current_basis: np.ndarray,
+) -> float:
+    """Return ``||UU^T - VV^T||_2`` without forming full projectors.
+
+    For equal-dimensional orthonormal bases ``U`` and ``V``, the projector
+    distance equals the sine of the largest principal angle:
+
+    ``sqrt(1 - sigma_min(U.T @ V)**2)``.
+
+    The overlap matrix has the cluster dimension rather than the ambient
+    dimension, which avoids an ambient-size SVD for every spectral cluster.
+    """
+    previous_work = np.asarray(previous_basis, dtype=float)
+    current_work = np.asarray(current_basis, dtype=float)
+    if previous_work.ndim != 2 or current_work.ndim != 2:
+        raise ValueError("subspace bases must be two-dimensional")
+    if previous_work.shape != current_work.shape:
+        raise ValueError("subspace bases must have the same shape")
+    if previous_work.shape[1] == 0:
+        return 0.0
+
+    overlap = previous_work.T @ current_work
+    singular_values = np.linalg.svd(overlap, compute_uv=False)
+    sigma_min = float(np.clip(np.min(singular_values), 0.0, 1.0))
+    return math.sqrt(max(0.0, 1.0 - sigma_min * sigma_min))
+
+
 def _projector_distance_for_clusters(
     previous: np.ndarray,
     current: np.ndarray,
     relative_gap: float,
 ) -> tuple[float, bool, str]:
-    previous_values, previous_vectors = np.linalg.eigh(0.5 * (previous + previous.T))
-    current_values, current_vectors = np.linalg.eigh(0.5 * (current + current.T))
+    previous_values, previous_vectors = np.linalg.eigh(
+        0.5 * (previous + previous.T)
+    )
+    current_values, current_vectors = np.linalg.eigh(
+        0.5 * (current + current.T)
+    )
     previous_clusters = _cluster_slices(previous_values, relative_gap)
     current_clusters = _cluster_slices(current_values, relative_gap)
     previous_sizes = [item.stop - item.start for item in previous_clusters]
     current_sizes = [item.stop - item.start for item in current_clusters]
     if previous_sizes != current_sizes:
         return float("inf"), False, "spectral_cluster_partition_changed"
-    distances: list[float] = []
-    for previous_slice, current_slice in zip(previous_clusters, current_clusters):
-        previous_basis = previous_vectors[:, previous_slice]
-        current_basis = current_vectors[:, current_slice]
-        previous_projector = previous_basis @ previous_basis.T
-        current_projector = current_basis @ current_basis.T
-        distances.append(float(np.linalg.norm(current_projector - previous_projector, ord=2)))
+
+    distances = [
+        _subspace_projector_distance(
+            previous_vectors[:, previous_slice],
+            current_vectors[:, current_slice],
+        )
+        for previous_slice, current_slice in zip(
+            previous_clusters,
+            current_clusters,
+        )
+    ]
     return (max(distances, default=0.0), True, "")
 
 

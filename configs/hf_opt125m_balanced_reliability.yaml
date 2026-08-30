@@ -8,6 +8,15 @@ final_scientific_run: true
 reuse_completed_stages: false
 reuse_completed_final: false
 
+# Optional child-process environment. Prefer generating this section with
+# scripts/make_balanced_policies.py --gpus ... --cpu-threads ... .
+# runtime_env:
+#   CUDA_VISIBLE_DEVICES: "0"
+#   OMP_NUM_THREADS: "8"
+#   MKL_NUM_THREADS: "8"
+#   OPENBLAS_NUM_THREADS: "8"
+#   NUMEXPR_NUM_THREADS: "8"
+
 # Optional seed/block/output overrides are recursively merged into base_config.
 base_overrides:
   seed: 0

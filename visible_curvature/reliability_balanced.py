@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -29,6 +30,11 @@ import yaml
 from .partial_trace_stability import (
     PartialTraceStabilityThresholds,
     compare_partial_trace_artifacts,
+)
+from .run_lock import exclusive_output_lock
+from .runtime_bootstrap import (
+    RuntimeEnvironmentError,
+    runtime_env_from_policy,
 )
 
 
@@ -949,16 +955,41 @@ def annotate_final_outputs(
     )
     return summary
 
-def _run_command(command: Sequence[str], *, cwd: Path, log_path: Path, env: Mapping[str, str] | None = None) -> None:
+def _progress(message: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"[balanced {timestamp} pid={os.getpid()}] {message}", flush=True)
+
+
+def _run_command(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    env: Mapping[str, str] | None = None,
+) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     merged_env = os.environ.copy()
     if env:
         merged_env.update({str(k): str(v) for k, v in env.items()})
+    _progress(
+        "starting child process; "
+        f"log={log_path} command={' '.join(command)}"
+    )
     with log_path.open("w", encoding="utf-8") as handle:
-        process = subprocess.run(list(command), cwd=str(cwd), env=merged_env, stdout=handle, stderr=subprocess.STDOUT, text=True)
+        process = subprocess.run(
+            list(command),
+            cwd=str(cwd),
+            env=merged_env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
     if process.returncode != 0:
         tail = log_path.read_text(encoding="utf-8", errors="replace")[-6000:]
-        raise ReliabilityError(f"command failed ({process.returncode}): {' '.join(command)}\n{tail}")
+        raise ReliabilityError(
+            f"command failed ({process.returncode}): {' '.join(command)}\n{tail}"
+        )
+    _progress(f"child process completed; log={log_path}")
 
 
 def run_balanced_policy(policy_path: str | Path, *, project_root: str | Path | None = None) -> Path:
@@ -975,122 +1006,144 @@ def run_balanced_policy(policy_path: str | Path, *, project_root: str | Path | N
     if not output_root.is_absolute():
         output_root = (root / output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    generated_dir = output_root / "generated_configs"
-    logs_dir = output_root / "logs"
-    stages_dir = output_root / "diagnostic_stages"
-    final_dir = output_root / "final"
-    python_executable = str(policy.get("python_executable", sys.executable))
-    runner = root / "scripts" / "run_frozen_analysis.py"
-    validator = root / "scripts" / "validate_run.py"
-    if not runner.exists():
-        raise ReliabilityError(f"missing core runner: {runner}")
-
-    specs = build_stage_specs(policy)
-    thresholds = thresholds_from_policy(policy)
-    stage_frames: list[pd.DataFrame] = []
-    selected_spec = specs[-1]
-    shift_overrides_path = output_root / "curvature_shift_overrides.json"
-    for spec in specs:
-        stage_output = stages_dir / spec.label
-        stage_shift_path = shift_overrides_path if stage_frames else None
-        config, modified = prepare_core_config(
-            base_config,
-            stage=spec,
-            output_dir=stage_output,
-            diagnostic=True,
-            policy=policy,
-            shift_overrides_path=stage_shift_path,
+    try:
+        runtime_env = runtime_env_from_policy(policy)
+    except RuntimeEnvironmentError as exc:
+        raise ReliabilityError(str(exc)) from exc
+    with exclusive_output_lock(output_root, policy_path=policy_path):
+        visible_devices = runtime_env.get(
+            "CUDA_VISIBLE_DEVICES",
+            os.environ.get("CUDA_VISIBLE_DEVICES", "unset"),
         )
-        config_path = generated_dir / f"{spec.label}.yaml"
-        write_yaml(config_path, config)
-        (generated_dir / f"{spec.label}.changes.json").write_text(json.dumps(modified, indent=2, sort_keys=True), encoding="utf-8")
-        if stage_output.exists() and not bool(policy.get("reuse_completed_stages", False)):
-            shutil.rmtree(stage_output)
-        if not stage_output.exists():
-            _run_command([python_executable, str(runner), "--config", str(config_path)], cwd=root, log_path=logs_dir / f"{spec.label}.log")
-        if validator.exists():
-            _run_command([python_executable, str(validator), "--output-dir", str(stage_output)], cwd=root, log_path=logs_dir / f"{spec.label}.validate.log")
-        if not stage_frames:
-            extract_shift_overrides(stage_output, shift_overrides_path)
-        stage_frame = summarise_stage(stage_output, spec, policy)
-        stage_frames.append(stage_frame)
+        _progress(
+            f"acquired output lock for {output_root}; "
+            f"CUDA_VISIBLE_DEVICES={visible_devices}"
+        )
+        generated_dir = output_root / "generated_configs"
+        logs_dir = output_root / "logs"
+        stages_dir = output_root / "diagnostic_stages"
+        final_dir = output_root / "final"
+        python_executable = str(policy.get("python_executable", sys.executable))
+        runner = root / "scripts" / "run_frozen_analysis.py"
+        validator = root / "scripts" / "validate_run.py"
+        if not runner.exists():
+            raise ReliabilityError(f"missing core runner: {runner}")
+
+        specs = build_stage_specs(policy)
+        thresholds = thresholds_from_policy(policy)
+        stage_frames: list[pd.DataFrame] = []
+        selected_spec = specs[-1]
+        shift_overrides_path = output_root / "curvature_shift_overrides.json"
+        for spec in specs:
+            stage_output = stages_dir / spec.label
+            stage_shift_path = shift_overrides_path if stage_frames else None
+            config, modified = prepare_core_config(
+                base_config,
+                stage=spec,
+                output_dir=stage_output,
+                diagnostic=True,
+                policy=policy,
+                shift_overrides_path=stage_shift_path,
+            )
+            config_path = generated_dir / f"{spec.label}.yaml"
+            write_yaml(config_path, config)
+            (generated_dir / f"{spec.label}.changes.json").write_text(json.dumps(modified, indent=2, sort_keys=True), encoding="utf-8")
+            if stage_output.exists() and not bool(policy.get("reuse_completed_stages", False)):
+                shutil.rmtree(stage_output)
+            if not stage_output.exists():
+                _run_command([python_executable, str(runner), "--config", str(config_path)], cwd=root, log_path=logs_dir / f"{spec.label}.log", env=runtime_env)
+            if validator.exists():
+                _run_command([python_executable, str(validator), "--output-dir", str(stage_output)], cwd=root, log_path=logs_dir / f"{spec.label}.validate.log", env=runtime_env)
+            if not stage_frames:
+                extract_shift_overrides(stage_output, shift_overrides_path)
+            stage_frame = summarise_stage(stage_output, spec, policy)
+            stage_frames.append(stage_frame)
+            combined = pd.concat(stage_frames, ignore_index=True)
+            _progress(
+                f"{spec.label}: starting CPU endpoint/partial-trace certification"
+            )
+            current_cert = certify_convergence(combined, thresholds)
+            endpoint_done = bool(current_cert["adaptive_endpoint_certified"].map(_as_bool).all())
+            partial_done = bool(current_cert["adaptive_partial_trace_certified"].map(_as_bool).all())
+            selected_spec = spec
+            _progress(
+                f"{spec.label}: certification finished; "
+                f"endpoint_all={endpoint_done} partial_trace_all={partial_done}"
+            )
+            if endpoint_done and partial_done and len(stage_frames) >= thresholds.minimum_stage_count:
+                break
+
         combined = pd.concat(stage_frames, ignore_index=True)
-        current_cert = certify_convergence(combined, thresholds)
-        endpoint_done = bool(current_cert["adaptive_endpoint_certified"].map(_as_bool).all())
-        partial_done = bool(current_cert["adaptive_partial_trace_certified"].map(_as_bool).all())
-        selected_spec = spec
-        if endpoint_done and partial_done and len(stage_frames) >= thresholds.minimum_stage_count:
-            break
+        certificates = certify_convergence(combined, thresholds)
 
-    combined = pd.concat(stage_frames, ignore_index=True)
-    certificates = certify_convergence(combined, thresholds)
+        refinement_cfg = policy.get("reliability", {}).get("lower_tail_refinement", {})
+        need_refinement = not bool(certificates["adaptive_endpoint_certified"].map(_as_bool).all())
+        if bool(refinement_cfg.get("enabled", True)) and (need_refinement or bool(refinement_cfg.get("always_run", False))):
+            refinement_spec = StageSpec(
+                index=int(combined["stage_index"].max()) + 1,
+                endpoint_steps=int(refinement_cfg.get("steps", max(s.endpoint_steps for s in specs))),
+                endpoint_starts=int(refinement_cfg.get("starts", 6)),
+                partial_trace_probes=int(refinement_cfg.get("partial_trace_probes", max(s.partial_trace_probes for s in specs))),
+                label="lower_tail_multistart_refinement",
+                refinement=True,
+            )
+            stage_output = stages_dir / refinement_spec.label
+            config, modified = prepare_core_config(
+                base_config,
+                stage=refinement_spec,
+                output_dir=stage_output,
+                diagnostic=True,
+                policy=policy,
+                shift_overrides_path=shift_overrides_path,
+            )
+            config_path = generated_dir / f"{refinement_spec.label}.yaml"
+            write_yaml(config_path, config)
+            (generated_dir / f"{refinement_spec.label}.changes.json").write_text(json.dumps(modified, indent=2, sort_keys=True), encoding="utf-8")
+            if stage_output.exists() and not bool(policy.get("reuse_completed_stages", False)):
+                shutil.rmtree(stage_output)
+            if not stage_output.exists():
+                _run_command([python_executable, str(runner), "--config", str(config_path)], cwd=root, log_path=logs_dir / f"{refinement_spec.label}.log", env=runtime_env)
+            if validator.exists():
+                _run_command([python_executable, str(validator), "--output-dir", str(stage_output)], cwd=root, log_path=logs_dir / f"{refinement_spec.label}.validate.log", env=runtime_env)
+            stage_frames.append(summarise_stage(stage_output, refinement_spec, policy))
+            combined = pd.concat(stage_frames, ignore_index=True)
+            certificates = certify_convergence(combined, thresholds)
+            selected_spec = refinement_spec
 
-    refinement_cfg = policy.get("reliability", {}).get("lower_tail_refinement", {})
-    need_refinement = not bool(certificates["adaptive_endpoint_certified"].map(_as_bool).all())
-    if bool(refinement_cfg.get("enabled", True)) and (need_refinement or bool(refinement_cfg.get("always_run", False))):
-        refinement_spec = StageSpec(
-            index=int(combined["stage_index"].max()) + 1,
-            endpoint_steps=int(refinement_cfg.get("steps", max(s.endpoint_steps for s in specs))),
-            endpoint_starts=int(refinement_cfg.get("starts", 6)),
-            partial_trace_probes=int(refinement_cfg.get("partial_trace_probes", max(s.partial_trace_probes for s in specs))),
-            label="lower_tail_multistart_refinement",
-            refinement=True,
+        final_spec = StageSpec(
+            index=selected_spec.index + 1,
+            endpoint_steps=int(certificates["selected_endpoint_steps"].max()),
+            endpoint_starts=int(certificates["selected_endpoint_starts"].max()),
+            partial_trace_probes=int(certificates["selected_partial_trace_probes"].max()),
+            label="final_balanced_confirmatory",
+            refinement=False,
         )
-        stage_output = stages_dir / refinement_spec.label
-        config, modified = prepare_core_config(
+        final_config, modified = prepare_core_config(
             base_config,
-            stage=refinement_spec,
-            output_dir=stage_output,
-            diagnostic=True,
+            stage=final_spec,
+            output_dir=final_dir,
+            diagnostic=False,
             policy=policy,
             shift_overrides_path=shift_overrides_path,
         )
-        config_path = generated_dir / f"{refinement_spec.label}.yaml"
-        write_yaml(config_path, config)
-        (generated_dir / f"{refinement_spec.label}.changes.json").write_text(json.dumps(modified, indent=2, sort_keys=True), encoding="utf-8")
-        if stage_output.exists() and not bool(policy.get("reuse_completed_stages", False)):
-            shutil.rmtree(stage_output)
-        if not stage_output.exists():
-            _run_command([python_executable, str(runner), "--config", str(config_path)], cwd=root, log_path=logs_dir / f"{refinement_spec.label}.log")
+        final_config_path = generated_dir / "final_balanced_confirmatory.yaml"
+        write_yaml(final_config_path, final_config)
+        (generated_dir / "final_balanced_confirmatory.changes.json").write_text(json.dumps(modified, indent=2, sort_keys=True), encoding="utf-8")
+        if final_dir.exists() and not bool(policy.get("reuse_completed_final", False)):
+            shutil.rmtree(final_dir)
+        if not final_dir.exists():
+            _run_command([python_executable, str(runner), "--config", str(final_config_path)], cwd=root, log_path=logs_dir / "final_balanced_confirmatory.log", env=runtime_env)
         if validator.exists():
-            _run_command([python_executable, str(validator), "--output-dir", str(stage_output)], cwd=root, log_path=logs_dir / f"{refinement_spec.label}.validate.log")
-        stage_frames.append(summarise_stage(stage_output, refinement_spec, policy))
-        combined = pd.concat(stage_frames, ignore_index=True)
-        certificates = certify_convergence(combined, thresholds)
-        selected_spec = refinement_spec
+            _run_command([python_executable, str(validator), "--output-dir", str(final_dir)], cwd=root, log_path=logs_dir / "final_balanced_confirmatory.validate.log", env=runtime_env)
 
-    final_spec = StageSpec(
-        index=selected_spec.index + 1,
-        endpoint_steps=int(certificates["selected_endpoint_steps"].max()),
-        endpoint_starts=int(certificates["selected_endpoint_starts"].max()),
-        partial_trace_probes=int(certificates["selected_partial_trace_probes"].max()),
-        label="final_balanced_confirmatory",
-        refinement=False,
-    )
-    final_config, modified = prepare_core_config(
-        base_config,
-        stage=final_spec,
-        output_dir=final_dir,
-        diagnostic=False,
-        policy=policy,
-        shift_overrides_path=shift_overrides_path,
-    )
-    final_config_path = generated_dir / "final_balanced_confirmatory.yaml"
-    write_yaml(final_config_path, final_config)
-    (generated_dir / "final_balanced_confirmatory.changes.json").write_text(json.dumps(modified, indent=2, sort_keys=True), encoding="utf-8")
-    if final_dir.exists() and not bool(policy.get("reuse_completed_final", False)):
-        shutil.rmtree(final_dir)
-    if not final_dir.exists():
-        _run_command([python_executable, str(runner), "--config", str(final_config_path)], cwd=root, log_path=logs_dir / "final_balanced_confirmatory.log")
-    if validator.exists():
-        _run_command([python_executable, str(validator), "--output-dir", str(final_dir)], cwd=root, log_path=logs_dir / "final_balanced_confirmatory.validate.log")
-
-    _write_csv_atomic(combined, output_root / "endpoint_convergence.csv")
-    _write_csv_atomic(certificates, output_root / "balanced_reliability_certificates.csv")
-    summary = annotate_final_outputs(final_dir, combined, certificates, policy)
-    (output_root / "balanced_reliability_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-    (output_root / "COMPLETED").write_text("balanced reliability pipeline completed\n", encoding="utf-8")
-    return final_dir
+        _write_csv_atomic(combined, output_root / "endpoint_convergence.csv")
+        _write_csv_atomic(certificates, output_root / "balanced_reliability_certificates.csv")
+        _progress("final core run complete; promoting canonical balanced outputs")
+        summary = annotate_final_outputs(final_dir, combined, certificates, policy)
+        (output_root / "balanced_reliability_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        (output_root / "COMPLETED").write_text("balanced reliability pipeline completed\n", encoding="utf-8")
+        _progress(f"balanced pipeline completed: {final_dir}")
+        return final_dir
 
 
 def build_parser() -> argparse.ArgumentParser:

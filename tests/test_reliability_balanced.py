@@ -128,3 +128,19 @@ def test_partial_trace_certificate_rejects_rotated_intervention_basis(tmp_path):
     )
     assert not bool(cert.loc[0, "adaptive_partial_trace_certified"])
     assert not bool(cert.loc[0, "partial_trace_subspace_stable"])
+
+
+def test_runtime_environment_is_read_from_policy_as_strings():
+    from visible_curvature.reliability_balanced import runtime_env_from_policy
+
+    assert runtime_env_from_policy(
+        {
+            "runtime_env": {
+                "CUDA_VISIBLE_DEVICES": 2,
+                "OMP_NUM_THREADS": 8,
+            }
+        }
+    ) == {
+        "CUDA_VISIBLE_DEVICES": "2",
+        "OMP_NUM_THREADS": "8",
+    }
