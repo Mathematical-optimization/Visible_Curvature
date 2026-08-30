@@ -224,6 +224,56 @@ def adam_coordinate_elasticity(
     }
 
 
+
+def predicted_delta_g_components(
+    *,
+    r_left: float,
+    width_left: float,
+    r_right: float,
+    width_right: float,
+    r_adam: float,
+    width_adam: float,
+    factor_exponent: float = 0.25,
+) -> dict[str, float]:
+    """Return the commuting--Kronecker proxy decomposition for ``Delta G``.
+
+    The response-consumption term alone is not a prediction of
+    ``G_Shampoo - G_Adam`` unless the Adam coordinate-curvature width equals
+    the sum of the two Shampoo factor-curvature widths.  The explicit
+    baseline term keeps this structural assumption auditable.
+    """
+    vals = [
+        r_left,
+        width_left,
+        r_right,
+        width_right,
+        r_adam,
+        width_adam,
+        factor_exponent,
+    ]
+    if not all(math.isfinite(float(v)) for v in vals):
+        return {
+            "baseline_width_mismatch": float("nan"),
+            "delta_g_predicted_consumption": float("nan"),
+            "delta_g_predicted_full_proxy": float("nan"),
+        }
+    alpha = float(factor_exponent)
+    if not 0.0 < alpha <= 0.5:
+        raise ValueError("factor_exponent must lie in (0, 0.5]")
+    width_l = float(width_left)
+    width_r = float(width_right)
+    width_a = float(width_adam)
+    baseline = width_a - (width_l + width_r)
+    consumption = alpha * (
+        float(r_left) * width_l + float(r_right) * width_r
+    ) - 0.5 * float(r_adam) * width_a
+    return {
+        "baseline_width_mismatch": baseline,
+        "delta_g_predicted_consumption": consumption,
+        "delta_g_predicted_full_proxy": baseline + consumption,
+    }
+
+
 def predicted_delta_g(
     *,
     r_left: float,
@@ -234,17 +284,18 @@ def predicted_delta_g(
     width_adam: float,
     factor_exponent: float = 0.25,
 ) -> float:
-    """Commuting-response prediction for ``G_Shampoo - G_Adam``.
+    """Return the full commuting--Kronecker proxy for ``G_Shampoo-G_Adam``.
 
-    Shampoo consumes each retained factor with inverse power ``alpha`` while
-    Adam consumes its coordinate statistic with inverse square root.  The
-    practical rule uses ``alpha=0.25``; ``alpha=0.5`` is the paper's frozen
-    inverse-square-root control.
+    This compatibility wrapper returns ``delta_g_predicted_full_proxy``.
+    Call :func:`predicted_delta_g_components` when the baseline and
+    response-consumption contributions must be reported separately.
     """
-    vals = [r_left, width_left, r_right, width_right, r_adam, width_adam, factor_exponent]
-    if not all(math.isfinite(float(v)) for v in vals):
-        return float("nan")
-    alpha = float(factor_exponent)
-    if not 0.0 < alpha <= 0.5:
-        raise ValueError("factor_exponent must lie in (0, 0.5]")
-    return alpha * (float(r_left) * float(width_left) + float(r_right) * float(width_right)) - 0.5 * float(r_adam) * float(width_adam)
+    return predicted_delta_g_components(
+        r_left=r_left,
+        width_left=width_left,
+        r_right=r_right,
+        width_right=width_right,
+        r_adam=r_adam,
+        width_adam=width_adam,
+        factor_exponent=factor_exponent,
+    )["delta_g_predicted_full_proxy"]

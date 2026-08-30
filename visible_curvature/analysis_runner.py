@@ -28,7 +28,7 @@ from .diagnostics import (
     adam_coordinate_elasticity,
     combine_factor_elasticities,
     normalized_commutator,
-    predicted_delta_g,
+    predicted_delta_g_components,
     safe_log_condition,
     visible_elasticity,
 )
@@ -42,6 +42,7 @@ from .linear_algebra import (
 )
 from .mechanism import mean_gradient_contamination
 from .partial_trace_stability import save_partial_trace_artifact
+from .provenance import runtime_provenance
 from .preconditioners import (
     AdamFormPreconditioner,
     ShampooFormPreconditioner,
@@ -69,6 +70,24 @@ from .utils import (
 
 SCHEMA_VERSION = "1.0"
 PRIMARY_ALPHA = 0.25
+
+
+def _controls_enabled_for_block(analysis: Mapping[str, Any], block_name: str) -> bool:
+    """Return whether preregistered expensive controls run on ``block_name``.
+
+    An empty list preserves the historical behavior of running controls on every
+    selected block. Primary block metrics are unaffected by this selector.
+    """
+    controls = analysis.get("controls", {})
+    names = [str(value) for value in controls.get("block_names", [])]
+    return not names or str(block_name) in set(names)
+
+
+def _name_list_digest(names: Sequence[str]) -> str:
+    encoded = json.dumps(list(names), sort_keys=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
 
 
 BLOCK_FAILURE_COLUMNS = [
@@ -111,9 +130,14 @@ BOOTSTRAP_COLUMNS = [
     "covariance_moment",
     "assignment",
     "alpha",
+    "K_H",
     "K_adam",
     "K_shampoo",
+    "G_adam",
+    "G_shampoo",
     "delta_g",
+    "delta_g_from_gains",
+    "fallback_tau",
     "condition_metric",
     "adam_condition_saturated",
     "shampoo_condition_saturated",
@@ -129,17 +153,99 @@ CONTROL_COLUMNS = [
     "assignment",
     "alpha",
     "damping_coefficient",
+    "sweep_mode",
+    "adam_damping_coefficient",
+    "shampoo_damping_coefficient",
     "adam_damping",
     "shampoo_left_damping",
     "shampoo_right_damping",
+    "K_H",
     "K_adam",
     "K_shampoo",
+    "G_adam",
+    "G_shampoo",
     "delta_g",
+    "delta_g_from_gains",
+    "fallback_tau",
+    "control_estimand",
+    "control_value",
+    "delta_g_scalar_limit",
+    "delta_g_distance_to_scalar_limit",
+    "alpha_reference",
+    "alpha_reference_delta_g",
+    "alpha_delta_from_practical",
+    "alpha_abs_delta_g_change",
     "condition_metric",
+    "H_condition_metric",
+    "H_condition_saturated",
     "adam_condition_saturated",
     "shampoo_condition_saturated",
     "endpoint_numerically_reliable",
 ]
+
+
+RIDGE_SENSITIVITY_COLUMNS = [
+    "schema_version",
+    "config_hash",
+    "protocol_hash",
+    "seed",
+    "block_name",
+    "block_type",
+    "covariance_moment",
+    "assignment",
+    "alpha",
+    "ridge_coefficient",
+    "ridge_mode",
+    "target_ridge",
+    "nominal_shift",
+    "curvature_shift",
+    "primary_curvature_shift",
+    "curvature_raw_min_ritz",
+    "curvature_raw_max_ritz",
+    "K_H",
+    "K_adam",
+    "K_shampoo",
+    "G_adam",
+    "G_shampoo",
+    "delta_g",
+    "delta_g_from_gains",
+    "condition_metric",
+    "fallback_tau",
+    "adam_condition_saturated",
+    "shampoo_condition_saturated",
+    "endpoint_numerically_reliable",
+]
+
+
+def ridge_sensitivity_plan(
+    *,
+    raw_min_ritz: float,
+    raw_max_ritz: float,
+    coefficients: Sequence[float],
+) -> list[dict[str, float]]:
+    """Return relative-ridge targets and their one-pass nominal shifts."""
+    minimum = float(raw_min_ritz)
+    maximum = float(raw_max_ritz)
+    if not math.isfinite(minimum) or not math.isfinite(maximum):
+        raise ValueError("raw Ritz endpoints must be finite")
+    scale = max(abs(maximum), float(torch.finfo(torch.float64).tiny))
+    rows: list[dict[str, float]] = []
+    for raw_value in coefficients:
+        coefficient = float(raw_value)
+        if not math.isfinite(coefficient) or coefficient < 0.0:
+            raise ValueError(
+                "ridge sensitivity coefficients must be finite and nonnegative"
+            )
+        target = coefficient * scale
+        rows.append(
+            {
+                "ridge_coefficient": coefficient,
+                "target_ridge": target,
+                "nominal_shift": max(0.0, -minimum + target),
+            }
+        )
+    return rows
+
 
 
 def load_curvature_shift_overrides(
@@ -325,7 +431,16 @@ def _pair_conditions(
     *,
     relative_floor: float,
     fallback_tau: float,
+    reference_spec: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Evaluate Adam, Shampoo, and optional reference curvature compatibly.
+
+    Congruence by a positive-definite preconditioner preserves nullity.  If
+    the unpreconditioned reference curvature has no accepted ordinary lower
+    endpoint, finite ordinary Ritz minima for the two effective operators are
+    not treated as evidence of finite ordinary condition numbers.  The whole
+    comparison is then evaluated with the same relative-tau truncation.
+    """
     ordinary_adam = condition_from_spectrum(
         float(adam_spec["min_ritz"]),
         float(adam_spec["max_ritz"]),
@@ -336,7 +451,19 @@ def _pair_conditions(
         float(shampoo_spec["max_ritz"]),
         rel_floor=relative_floor,
     )
-    force_truncated = not (math.isfinite(ordinary_adam) and math.isfinite(ordinary_shampoo))
+    ordinary_reference = (
+        condition_from_spectrum(
+            float(reference_spec["min_ritz"]),
+            float(reference_spec["max_ritz"]),
+            rel_floor=relative_floor,
+        )
+        if reference_spec is not None
+        else 1.0
+    )
+    force_truncated = not all(
+        math.isfinite(value)
+        for value in (ordinary_reference, ordinary_adam, ordinary_shampoo)
+    )
     K_adam, metric_a, saturated_a = _condition_record(
         float(adam_spec["min_ritz"]),
         float(adam_spec["max_ritz"]),
@@ -354,14 +481,152 @@ def _pair_conditions(
     if metric_a != metric_s:
         raise RuntimeError("Adam and Shampoo condition metrics must match")
     delta = safe_log_condition(K_adam) - safe_log_condition(K_shampoo)
-    return {
+    record: dict[str, Any] = {
         "K_adam": K_adam,
         "K_shampoo": K_shampoo,
         "delta_g": delta,
         "condition_metric": metric_a,
+        "fallback_tau": float(fallback_tau),
         "adam_condition_saturated": saturated_a,
         "shampoo_condition_saturated": saturated_s,
     }
+    if reference_spec is not None:
+        K_H, H_saturated = _condition_for_metric(
+            reference_spec,
+            metric=metric_a,
+            relative_floor=relative_floor,
+            fallback_tau=fallback_tau,
+        )
+        record.update(
+            {
+                "K_H": K_H,
+                "H_condition_metric": metric_a,
+                "H_condition_saturated": H_saturated,
+                **_gain_record(
+                    K_H=K_H, K_adam=K_adam, K_shampoo=K_shampoo
+                ),
+            }
+        )
+    return record
+
+
+
+def _condition_for_metric(
+    spectrum: Mapping[str, Any],
+    *,
+    metric: str,
+    relative_floor: float,
+    fallback_tau: float,
+) -> tuple[float, bool]:
+    """Evaluate one Ritz interval with an explicitly declared condition metric."""
+    minimum = float(spectrum["min_ritz"])
+    maximum = float(spectrum["max_ritz"])
+    if metric == "ordinary":
+        value = condition_from_spectrum(minimum, maximum, rel_floor=relative_floor)
+        return value, False
+    if metric in {"truncated", "truncated_condition"}:
+        value = condition_from_spectrum(
+            minimum, maximum, truncation_tau=float(fallback_tau)
+        )
+        saturated = bool(
+            math.isfinite(maximum)
+            and maximum > 0.0
+            and minimum <= float(fallback_tau) * maximum
+        )
+        return value, saturated
+    raise ValueError(f"unsupported condition metric: {metric!r}")
+
+
+def _gain_record(*, K_H: float, K_adam: float, K_shampoo: float) -> dict[str, float]:
+    """Return scale-invariant gains computed with one compatible metric."""
+    log_h = safe_log_condition(float(K_H))
+    log_adam = safe_log_condition(float(K_adam))
+    log_shampoo = safe_log_condition(float(K_shampoo))
+    g_adam = log_h - log_adam
+    g_shampoo = log_h - log_shampoo
+    return {
+        "G_adam": g_adam,
+        "G_shampoo": g_shampoo,
+        "delta_g_from_gains": g_shampoo - g_adam,
+    }
+
+
+def _control_estimand_record(
+    *,
+    sweep_mode: str,
+    delta_g: float,
+    G_adam: float,
+    G_shampoo: float,
+) -> dict[str, float | str]:
+    """Declare the theory-aligned scalar target for a frozen control row."""
+    delta = float(delta_g)
+    g_adam = float(G_adam)
+    g_shampoo = float(G_shampoo)
+    scalar_limit = -g_adam
+    distance = abs(delta - scalar_limit) if all(
+        math.isfinite(value) for value in (delta, scalar_limit)
+    ) else float("nan")
+    if sweep_mode == "joint":
+        estimand = "abs_delta_g"
+        value = abs(delta) if math.isfinite(delta) else float("nan")
+    elif sweep_mode == "shampoo_only":
+        estimand = "abs_g_shampoo"
+        value = abs(g_shampoo) if math.isfinite(g_shampoo) else float("nan")
+    else:
+        estimand = "signed_delta_g"
+        value = delta
+    return {
+        "control_estimand": estimand,
+        "control_value": value,
+        "delta_g_scalar_limit": scalar_limit,
+        "delta_g_distance_to_scalar_limit": distance,
+    }
+
+
+def _annotate_alpha_control_rows(
+    rows: Sequence[Mapping[str, Any]], *, practical_alpha: float = PRIMARY_ALPHA
+) -> list[dict[str, Any]]:
+    """Attach within-block signed alpha responses relative to practical Shampoo."""
+    copied = [dict(row) for row in rows]
+    group_keys = (
+        "protocol_hash",
+        "seed",
+        "block_name",
+        "covariance_moment",
+        "assignment",
+        "damping_coefficient",
+    )
+    baselines: dict[tuple[Any, ...], float] = {}
+    for row in copied:
+        try:
+            alpha = float(row.get("alpha", float("nan")))
+            delta = float(row.get("delta_g", float("nan")))
+        except (TypeError, ValueError):
+            continue
+        if math.isclose(alpha, float(practical_alpha), rel_tol=0.0, abs_tol=1.0e-12):
+            key = tuple(row.get(name) for name in group_keys)
+            baselines[key] = delta
+    for row in copied:
+        key = tuple(row.get(name) for name in group_keys)
+        baseline = baselines.get(key, float("nan"))
+        try:
+            delta = float(row.get("delta_g", float("nan")))
+        except (TypeError, ValueError):
+            delta = float("nan")
+        change = delta - baseline if math.isfinite(delta) and math.isfinite(baseline) else float("nan")
+        row["alpha_reference"] = float(practical_alpha)
+        row["alpha_reference_delta_g"] = baseline
+        row["alpha_delta_from_practical"] = change
+        row["alpha_abs_delta_g_change"] = (
+            abs(delta) - abs(baseline)
+            if math.isfinite(delta) and math.isfinite(baseline)
+            else float("nan")
+        )
+        row["control_estimand"] = (
+            f"signed_delta_g_change_from_alpha_{float(practical_alpha):g}"
+        )
+        row["control_value"] = change
+    return copied
 
 
 def _tau_deltas(
@@ -643,6 +908,40 @@ def _make_shampoo(
     )
 
 
+class _LanczosSpectrumCache:
+    """Block-local cache for deterministic fixed-operator Lanczos spectra."""
+
+    def __init__(self) -> None:
+        self._values: dict[tuple[Any, ...], dict[str, Any]] = {}
+        self._hits = 0
+        self._misses = 0
+
+    def get_or_compute(
+        self,
+        key: Sequence[Any],
+        compute: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        normalized = tuple(key)
+        if normalized in self._values:
+            self._hits += 1
+            return self._values[normalized]
+        value = compute()
+        self._values[normalized] = value
+        self._misses += 1
+        return value
+
+    def diagnostics(self) -> dict[str, int]:
+        return {
+            "entries": len(self._values),
+            "hits": self._hits,
+            "misses": self._misses,
+        }
+
+
+def _float_cache_token(value: float) -> str:
+    return float(value).hex()
+
+
 def _evaluate_preconditioner_pair(
     H: LinearMatrixOperator,
     adam: AdamFormPreconditioner,
@@ -651,30 +950,50 @@ def _evaluate_preconditioner_pair(
     starts: Sequence[torch.Tensor],
     steps: int,
     condition_cfg: Mapping[str, Any],
+    spectrum_cache: _LanczosSpectrumCache | None = None,
+    adam_cache_key: Sequence[Any] | None = None,
+    shampoo_cache_key: Sequence[Any] | None = None,
+    reference_spec: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     adam_operator = effective_operator(H, adam.apply_half)
     shampoo_operator = effective_operator(H, shampoo.apply_half)
-    adam_spec = multi_start_lanczos(
-        adam_operator.matvec,
-        H.dim,
-        steps=steps,
-        device=H.device,
-        dtype=H.dtype,
-        starts=starts,
+
+    def compute_adam() -> dict[str, Any]:
+        return multi_start_lanczos(
+            adam_operator.matvec,
+            H.dim,
+            steps=steps,
+            device=H.device,
+            dtype=H.dtype,
+            starts=starts,
+        )
+
+    def compute_shampoo() -> dict[str, Any]:
+        return multi_start_lanczos(
+            shampoo_operator.matvec,
+            H.dim,
+            steps=steps,
+            device=H.device,
+            dtype=H.dtype,
+            starts=starts,
+        )
+
+    adam_spec = (
+        spectrum_cache.get_or_compute(adam_cache_key, compute_adam)
+        if spectrum_cache is not None and adam_cache_key is not None
+        else compute_adam()
     )
-    shampoo_spec = multi_start_lanczos(
-        shampoo_operator.matvec,
-        H.dim,
-        steps=steps,
-        device=H.device,
-        dtype=H.dtype,
-        starts=starts,
+    shampoo_spec = (
+        spectrum_cache.get_or_compute(shampoo_cache_key, compute_shampoo)
+        if spectrum_cache is not None and shampoo_cache_key is not None
+        else compute_shampoo()
     )
     pair = _pair_conditions(
         adam_spec,
         shampoo_spec,
         relative_floor=float(condition_cfg.get("relative_floor", 1.0e-8)),
         fallback_tau=float(condition_cfg.get("fallback_tau", 1.0e-4)),
+        reference_spec=reference_spec,
     )
     return pair, adam_spec, shampoo_spec
 
@@ -740,7 +1059,7 @@ def _factor_metrics(
     r_sh = combine_factor_elasticities(
         fit_left, fit_right, width_left, width_right
     )
-    prediction = predicted_delta_g(
+    prediction = predicted_delta_g_components(
         r_left=fit_left.slope,
         width_left=width_left,
         r_right=fit_right.slope,
@@ -772,40 +1091,120 @@ def _factor_metrics(
         "elasticity_eigen_max_residual_right": aux_right["eigen_max_relative_residual"],
         "partial_trace_negative_spectral_mass_left": aux_left["negative_spectral_mass"],
         "partial_trace_negative_spectral_mass_right": aux_right["negative_spectral_mass"],
-        "delta_g_predicted": prediction,
+        "num_factor_modes_left": int(aux_left["num_factor_modes"]),
+        "num_factor_modes_right": int(aux_right["num_factor_modes"]),
+        "num_coordinate_modes_adam": int(adam_aux["num_coordinate_modes"]),
+        "rank_corr_left": aux_left["rank_corr_h_q"],
+        "rank_corr_right": aux_right["rank_corr_h_q"],
+        "rank_corr_adam": adam_aux["rank_corr_coordinate"],
+        **prediction,
+        # Backward-compatible alias.  This is the full commuting--Kronecker
+        # proxy, not the response-consumption term alone.
+        "delta_g_predicted": prediction["delta_g_predicted_full_proxy"],
     }
 
 
 def _factor_reliability(metrics: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[bool, str]:
-    checks = {
-        "r2": all(
-            math.isfinite(float(metrics.get(key, float("nan"))))
-            and float(metrics[key]) >= float(cfg.get("min_r2", 0.5))
-            for key in ("r2_left", "r2_right")
+    min_r2 = float(cfg.get("min_r2", 0.5))
+    min_modes = int(cfg.get("min_elasticity_modes", 4))
+    min_width = float(cfg.get("min_curvature_log_width", 1.0e-3))
+    max_floor = float(cfg.get("max_preconditioner_floored_fraction", 0.25))
+
+    checks: list[tuple[str, bool]] = [
+        (
+            "r2_left",
+            math.isfinite(float(metrics.get("r2_left", float("nan"))))
+            and float(metrics["r2_left"]) >= min_r2,
         ),
-        "commutator": all(
-            math.isfinite(float(metrics.get(key, float("nan"))))
-            and float(metrics[key]) <= float(cfg.get("max_commutator", 0.5))
-            for key in ("commutator_left", "commutator_right")
+        (
+            "r2_right",
+            math.isfinite(float(metrics.get("r2_right", float("nan"))))
+            and float(metrics["r2_right"]) >= min_r2,
         ),
-        "eigen_residual": all(
-            math.isfinite(float(metrics.get(key, float("nan"))))
-            and float(metrics[key]) <= float(cfg.get("max_factor_eigen_residual", 1.0e-3))
-            for key in (
-                "elasticity_eigen_max_residual_left",
-                "elasticity_eigen_max_residual_right",
-            )
+        (
+            "r2_adam",
+            math.isfinite(float(metrics.get("r2_adam", float("nan"))))
+            and float(metrics["r2_adam"]) >= min_r2,
         ),
-        "negative_mass": all(
-            math.isfinite(float(metrics.get(key, float("nan"))))
-            and float(metrics[key]) <= float(cfg.get("max_factor_negative_mass", 0.05))
-            for key in (
-                "partial_trace_negative_spectral_mass_left",
-                "partial_trace_negative_spectral_mass_right",
-            )
+        (
+            "commutator",
+            all(
+                math.isfinite(float(metrics.get(key, float("nan"))))
+                and float(metrics[key]) <= float(cfg.get("max_commutator", 0.5))
+                for key in ("commutator_left", "commutator_right")
+            ),
         ),
-    }
-    failed = [name for name, passed in checks.items() if not passed]
+        (
+            "eigen_residual",
+            all(
+                math.isfinite(float(metrics.get(key, float("nan"))))
+                and float(metrics[key])
+                <= float(cfg.get("max_factor_eigen_residual", 1.0e-3))
+                for key in (
+                    "elasticity_eigen_max_residual_left",
+                    "elasticity_eigen_max_residual_right",
+                )
+            ),
+        ),
+        (
+            "negative_mass",
+            all(
+                math.isfinite(float(metrics.get(key, float("nan"))))
+                and float(metrics[key])
+                <= float(cfg.get("max_factor_negative_mass", 0.05))
+                for key in (
+                    "partial_trace_negative_spectral_mass_left",
+                    "partial_trace_negative_spectral_mass_right",
+                )
+            ),
+        ),
+        (
+            "insufficient_left_modes",
+            int(metrics.get("num_factor_modes_left", 0)) >= min_modes,
+        ),
+        (
+            "insufficient_right_modes",
+            int(metrics.get("num_factor_modes_right", 0)) >= min_modes,
+        ),
+        (
+            "insufficient_adam_modes",
+            int(metrics.get("num_coordinate_modes_adam", 0)) >= min_modes,
+        ),
+        (
+            "degenerate_left_curvature_width",
+            math.isfinite(float(metrics.get("curvature_log_width_left", float("nan"))))
+            and float(metrics["curvature_log_width_left"]) >= min_width,
+        ),
+        (
+            "degenerate_right_curvature_width",
+            math.isfinite(float(metrics.get("curvature_log_width_right", float("nan"))))
+            and float(metrics["curvature_log_width_right"]) >= min_width,
+        ),
+        (
+            "degenerate_adam_curvature_width",
+            math.isfinite(float(metrics.get("curvature_log_width_adam", float("nan"))))
+            and float(metrics["curvature_log_width_adam"]) >= min_width,
+        ),
+        (
+            "predictor_nonfinite",
+            math.isfinite(
+                float(metrics.get("delta_g_predicted_full_proxy", float("nan")))
+            ),
+        ),
+        (
+            "floor_dominated_preconditioner",
+            all(
+                math.isfinite(float(metrics.get(key, float("nan"))))
+                and float(metrics[key]) <= max_floor
+                for key in (
+                    "adam_floored_fraction",
+                    "shampoo_left_floored_fraction",
+                    "shampoo_right_floored_fraction",
+                )
+            ),
+        ),
+    ]
+    failed = [name for name, passed in checks if not passed]
     return not failed, ",".join(failed)
 
 
@@ -845,6 +1244,7 @@ def _analyze_block(
     curvature_shift_overrides: Mapping[str, float],
     curvature_shift_override_sha256: str,
 ) -> tuple[
+    list[dict],
     list[dict],
     list[dict],
     list[dict],
@@ -926,7 +1326,7 @@ def _analyze_block(
         dtype=H.dtype,
         starts=starts,
     )
-    K_H, H_metric, H_saturated = _condition_record(
+    K_H_native, H_metric_native, H_saturated_native = _condition_record(
         float(H_spec["min_ritz"]),
         float(H_spec["max_ritz"]),
         relative_floor=float(condition_cfg.get("relative_floor", 1.0e-8)),
@@ -976,6 +1376,33 @@ def _analyze_block(
     damping_rows: list[dict] = []
     tau_rows: list[dict] = []
     moment_cache: dict[str, dict[str, Any]] = {}
+    spectrum_cache = _LanczosSpectrumCache()
+    budget_token = (lanczos_steps, lanczos_starts, seed + 2017)
+
+    def adam_cache_key(moment: str, damping: float) -> tuple[Any, ...]:
+        return (
+            "adam",
+            moment,
+            _float_cache_token(damping),
+            *budget_token,
+        )
+
+    def shampoo_cache_key(
+        moment: str,
+        assignment: str,
+        alpha: float,
+        left_damping: float,
+        right_damping: float,
+    ) -> tuple[Any, ...]:
+        return (
+            "shampoo",
+            moment,
+            assignment,
+            _float_cache_token(alpha),
+            _float_cache_token(left_damping),
+            _float_cache_token(right_damping),
+            *budget_token,
+        )
 
     for moment in ("centered", "uncentered"):
         covariance = moments_cpu[moment].to(device=device, dtype=dtype)
@@ -1000,6 +1427,16 @@ def _analyze_block(
             starts=starts,
             steps=lanczos_steps,
             condition_cfg=condition_cfg,
+            reference_spec=H_spec,
+            spectrum_cache=spectrum_cache,
+            adam_cache_key=adam_cache_key(moment, dampings["adam"]),
+            shampoo_cache_key=shampoo_cache_key(
+                moment,
+                "observed",
+                PRIMARY_ALPHA,
+                dampings["left"],
+                dampings["right"],
+            ),
         )
         pair_reliability = _pair_numerical_reliability(
             adam_spec,
@@ -1020,7 +1457,26 @@ def _analyze_block(
             (curvature_cache_left, curvature_cache_right),
             alpha=PRIMARY_ALPHA,
         )
-        factor_reliable, factor_reasons = _factor_reliability(factors, reliability_cfg)
+        K_H, H_saturated = _condition_for_metric(
+            H_spec,
+            metric=str(pair["condition_metric"]),
+            relative_floor=float(condition_cfg.get("relative_floor", 1.0e-8)),
+            fallback_tau=float(condition_cfg.get("fallback_tau", 1.0e-4)),
+        )
+        gains = _gain_record(
+            K_H=K_H,
+            K_adam=float(pair["K_adam"]),
+            K_shampoo=float(pair["K_shampoo"]),
+        )
+        factor_gate_metrics = {
+            **factors,
+            "adam_floored_fraction": adam.floored_fraction,
+            "shampoo_left_floored_fraction": shampoo.left_floored_fraction,
+            "shampoo_right_floored_fraction": shampoo.right_floored_fraction,
+        }
+        factor_reliable, factor_reasons = _factor_reliability(
+            factor_gate_metrics, reliability_cfg
+        )
         row = {
             **metadata,
             "covariance_moment": moment,
@@ -1038,10 +1494,14 @@ def _analyze_block(
             "curvature_shift_over_raw_max": shift_ratio,
             "partial_trace_artifact": str(partial_trace_artifact.resolve()),
             "K_H": K_H,
-            "H_condition_metric": H_metric,
+            "H_condition_metric": str(pair["condition_metric"]),
             "H_condition_saturated": H_saturated,
+            "K_H_native": K_H_native,
+            "H_condition_metric_native": H_metric_native,
+            "H_condition_saturated_native": H_saturated_native,
             **_spec_columns("H", H_spec),
             **pair,
+            **gains,
             **_spec_columns("Adam", adam_spec),
             **_spec_columns("Shampoo", shampoo_spec),
             "adam_damping": dampings["adam"],
@@ -1131,6 +1591,7 @@ def _analyze_block(
             starts=low_starts,
             steps=low_steps,
             condition_cfg=condition_cfg,
+            reference_spec=H_spec,
         )
         rng = np.random.default_rng(seed + 5003)
         bootstrap_values: list[float] = []
@@ -1160,6 +1621,7 @@ def _analyze_block(
                 starts=low_starts,
                 steps=low_steps,
                 condition_cfg=condition_cfg,
+                reference_spec=H_spec,
             )
             bootstrap_values.append(float(pair["delta_g"]))
             bootstrap_rows.append(
@@ -1204,7 +1666,8 @@ def _analyze_block(
     # Centered factor-assignment, alpha, and damping controls.
     centered = moment_cache["centered"]
     assignments = [str(value) for value in analysis.get("assignments", ["observed", "aligned", "reversed"])]
-    controls_enabled = any(
+    block_controls_enabled = _controls_enabled_for_block(analysis, block.name)
+    controls_enabled = block_controls_enabled and any(
         bool(analysis.get(name, {}).get("enabled", False))
         for name in ("interventions", "alpha_sweep", "damping_sweep")
     )
@@ -1249,6 +1712,23 @@ def _analyze_block(
         numerical = _endpoint_numerical_reliability(
             [adam_spec, shampoo_spec], reliability_cfg
         )
+        compatible_K_H, compatible_H_saturated = _condition_for_metric(
+            H_spec,
+            metric=str(pair["condition_metric"]),
+            relative_floor=float(condition_cfg.get("relative_floor", 1.0e-8)),
+            fallback_tau=float(condition_cfg.get("fallback_tau", 1.0e-4)),
+        )
+        gains = _gain_record(
+            K_H=compatible_K_H,
+            K_adam=float(pair["K_adam"]),
+            K_shampoo=float(pair["K_shampoo"]),
+        )
+        estimand = _control_estimand_record(
+            sweep_mode=sweep_mode,
+            delta_g=float(pair["delta_g"]),
+            G_adam=float(gains["G_adam"]),
+            G_shampoo=float(gains["G_shampoo"]),
+        )
         return {
             **{key: metadata[key] for key in metadata if key in {"schema_version", "config_hash", "protocol_hash", "seed", "block_name", "block_type"}},
             "covariance_moment": "centered",
@@ -1261,11 +1741,18 @@ def _analyze_block(
             "adam_damping": dampings["adam"],
             "shampoo_left_damping": dampings["left"],
             "shampoo_right_damping": dampings["right"],
+            "K_H": compatible_K_H,
+            "H_condition_metric": str(pair["condition_metric"]),
+            "H_condition_saturated": compatible_H_saturated,
             **pair,
+            **gains,
+            **estimand,
             "endpoint_numerically_reliable": bool(numerical["numerically_reliable"]),
         }
 
-    if bool(analysis.get("interventions", {}).get("enabled", False)):
+    if block_controls_enabled and bool(
+        analysis.get("interventions", {}).get("enabled", False)
+    ):
         for assignment in assignments:
             cached = assignment_cache[assignment]
             shampoo = _make_shampoo(
@@ -1283,6 +1770,18 @@ def _analyze_block(
                 starts=starts,
                 steps=lanczos_steps,
                 condition_cfg=condition_cfg,
+                reference_spec=H_spec,
+                spectrum_cache=spectrum_cache,
+                adam_cache_key=adam_cache_key(
+                    "centered", centered["dampings"]["adam"]
+                ),
+                shampoo_cache_key=shampoo_cache_key(
+                    "centered",
+                    assignment,
+                    PRIMARY_ALPHA,
+                    centered["dampings"]["left"],
+                    centered["dampings"]["right"],
+                ),
             )
             intervention_rows.append(
                 control_row(
@@ -1333,7 +1832,7 @@ def _analyze_block(
             )
 
     alpha_cfg = analysis.get("alpha_sweep", {})
-    if bool(alpha_cfg.get("enabled", False)):
+    if block_controls_enabled and bool(alpha_cfg.get("enabled", False)):
         for alpha in [float(value) for value in alpha_cfg.get("values", [0.25, 0.5])]:
             for assignment in assignments:
                 cached = assignment_cache[assignment]
@@ -1352,6 +1851,18 @@ def _analyze_block(
                     starts=starts,
                     steps=lanczos_steps,
                     condition_cfg=condition_cfg,
+                    reference_spec=H_spec,
+                    spectrum_cache=spectrum_cache,
+                    adam_cache_key=adam_cache_key(
+                        "centered", centered["dampings"]["adam"]
+                    ),
+                    shampoo_cache_key=shampoo_cache_key(
+                        "centered",
+                        assignment,
+                        alpha,
+                        centered["dampings"]["left"],
+                        centered["dampings"]["right"],
+                    ),
                 )
                 alpha_rows.append(
                     control_row(
@@ -1402,7 +1913,7 @@ def _analyze_block(
                 )
 
     damping_cfg = analysis.get("damping_sweep", {})
-    if bool(damping_cfg.get("enabled", False)):
+    if block_controls_enabled and bool(damping_cfg.get("enabled", False)):
         for sweep in damping_sweep_plan(preconditioner_cfg, damping_cfg):
             sweep_mode = str(sweep["sweep_mode"])
             coefficient = float(sweep["damping_coefficient"])
@@ -1414,21 +1925,13 @@ def _analyze_block(
                 adam_coefficient_override=adam_coefficient,
                 shampoo_coefficient_override=shampoo_coefficient,
             )
-            if sweep_mode == "shampoo_only":
-                adam_spec = centered["adam_spec"]
-            else:
-                adam = _make_adam(
+            adam = (
+                centered["adam"]
+                if sweep_mode == "shampoo_only"
+                else _make_adam(
                     centered["covariance"], dampings["adam"], preconditioner_cfg
                 )
-                adam_operator = effective_operator(H, adam.apply_half)
-                adam_spec = multi_start_lanczos(
-                    adam_operator.matvec,
-                    H.dim,
-                    steps=lanczos_steps,
-                    device=H.device,
-                    dtype=H.dtype,
-                    starts=starts,
-                )
+            )
             for assignment in assignments:
                 cached = assignment_cache[assignment]
                 shampoo = _make_shampoo(
@@ -1439,20 +1942,25 @@ def _analyze_block(
                     preconditioner_cfg,
                     spectra=cached["spectra"],
                 )
-                shampoo_operator = effective_operator(H, shampoo.apply_half)
-                shampoo_spec = multi_start_lanczos(
-                    shampoo_operator.matvec,
-                    H.dim,
-                    steps=lanczos_steps,
-                    device=H.device,
-                    dtype=H.dtype,
+                pair, adam_spec, shampoo_spec = _evaluate_preconditioner_pair(
+                    H,
+                    adam,
+                    shampoo,
                     starts=starts,
-                )
-                pair = _pair_conditions(
-                    adam_spec,
-                    shampoo_spec,
-                    relative_floor=float(condition_cfg.get("relative_floor", 1.0e-8)),
-                    fallback_tau=float(condition_cfg.get("fallback_tau", 1.0e-4)),
+                    steps=lanczos_steps,
+                    condition_cfg=condition_cfg,
+                    reference_spec=H_spec,
+                    spectrum_cache=spectrum_cache,
+                    adam_cache_key=adam_cache_key(
+                        "centered", dampings["adam"]
+                    ),
+                    shampoo_cache_key=shampoo_cache_key(
+                        "centered",
+                        assignment,
+                        PRIMARY_ALPHA,
+                        dampings["left"],
+                        dampings["right"],
+                    ),
                 )
                 damping_rows.append(
                     control_row(
@@ -1484,6 +1992,122 @@ def _analyze_block(
                     )
                 )
 
+    ridge_rows: list[dict[str, Any]] = []
+    ridge_cfg = analysis.get("ridge_sensitivity", {})
+    if block_controls_enabled and bool(ridge_cfg.get("enabled", False)):
+        sensitivity_plan = ridge_sensitivity_plan(
+            raw_min_ritz=build.raw_min_ritz,
+            raw_max_ritz=build.raw_max_ritz,
+            coefficients=[
+                float(value) for value in ridge_cfg.get("coefficients", [])
+            ],
+        )
+        observed_shampoo = _make_shampoo(
+            centered["covariance"].left,
+            centered["covariance"].right,
+            (centered["dampings"]["left"], centered["dampings"]["right"]),
+            PRIMARY_ALPHA,
+            preconditioner_cfg,
+            spectra=centered["factor_spectra"],
+        )
+        for sensitivity in sensitivity_plan:
+            coefficient = float(sensitivity["ridge_coefficient"])
+            ridge_build = stabilize_curvature(
+                raw,
+                psd_mode=str(curvature_cfg.get("psd_mode", "shift")),
+                ridge=coefficient,
+                ridge_mode="relative_max",
+                lanczos_steps=int(
+                    curvature_cfg.get("stabilize_lanczos_steps", 12)
+                ),
+                lanczos_starts=int(
+                    curvature_cfg.get("stabilize_lanczos_starts", 1)
+                ),
+                seed=seed + 1009,
+                max_rounds=int(curvature_cfg.get("stabilize_rounds", 2)),
+                shift_override=None,
+            )
+            H_ridge = ridge_build.operator
+            H_ridge_spec = multi_start_lanczos(
+                H_ridge.matvec,
+                H_ridge.dim,
+                steps=lanczos_steps,
+                device=H_ridge.device,
+                dtype=H_ridge.dtype,
+                starts=starts,
+            )
+            ridge_pair, ridge_adam_spec, ridge_shampoo_spec = (
+                _evaluate_preconditioner_pair(
+                    H_ridge,
+                    centered["adam"],
+                    observed_shampoo,
+                    starts=starts,
+                    steps=lanczos_steps,
+                    condition_cfg=condition_cfg,
+                    reference_spec=H_ridge_spec,
+                )
+            )
+            ridge_K_H, _ = _condition_for_metric(
+                H_ridge_spec,
+                metric=str(ridge_pair["condition_metric"]),
+                relative_floor=float(condition_cfg.get("relative_floor", 1.0e-8)),
+                fallback_tau=float(condition_cfg.get("fallback_tau", 1.0e-4)),
+            )
+            gains = _gain_record(
+                K_H=ridge_K_H,
+                K_adam=float(ridge_pair["K_adam"]),
+                K_shampoo=float(ridge_pair["K_shampoo"]),
+            )
+            numerical = _endpoint_numerical_reliability(
+                [ridge_adam_spec, ridge_shampoo_spec], reliability_cfg
+            )
+            ridge_rows.append(
+                {
+                    **{
+                        key: metadata[key]
+                        for key in metadata
+                        if key
+                        in {
+                            "schema_version",
+                            "config_hash",
+                            "protocol_hash",
+                            "seed",
+                            "block_name",
+                            "block_type",
+                        }
+                    },
+                    "covariance_moment": "centered",
+                    "assignment": "observed",
+                    "alpha": PRIMARY_ALPHA,
+                    "ridge_coefficient": coefficient,
+                    "ridge_mode": "relative_max",
+                    "target_ridge": float(ridge_build.target_ridge),
+                    "nominal_shift": float(sensitivity["nominal_shift"]),
+                    "curvature_shift": float(ridge_build.shift),
+                    "primary_curvature_shift": float(build.shift),
+                    "curvature_raw_min_ritz": float(ridge_build.raw_min_ritz),
+                    "curvature_raw_max_ritz": float(ridge_build.raw_max_ritz),
+                    "K_H": ridge_K_H,
+                    **ridge_pair,
+                    **gains,
+                    "endpoint_numerically_reliable": bool(
+                        numerical["numerically_reliable"]
+                    ),
+                }
+            )
+
+    alpha_rows = _annotate_alpha_control_rows(
+        alpha_rows, practical_alpha=PRIMARY_ALPHA
+    )
+    cache_diagnostics = spectrum_cache.diagnostics()
+    cache_columns = {
+        "lanczos_spectrum_cache_entries": cache_diagnostics["entries"],
+        "lanczos_spectrum_cache_hits": cache_diagnostics["hits"],
+        "lanczos_spectrum_cache_misses": cache_diagnostics["misses"],
+    }
+    for rows in (block_rows, intervention_rows, alpha_rows, damping_rows):
+        for row in rows:
+            row.update(cache_columns)
     return (
         block_rows,
         bootstrap_rows,
@@ -1491,6 +2115,7 @@ def _analyze_block(
         alpha_rows,
         damping_rows,
         tau_rows,
+        ridge_rows,
     )
 
 
@@ -1531,6 +2156,8 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
     save_resolved_config(cfg, output_dir)
     seed = int(cfg.get("seed", 0))
     seed_everything(seed, deterministic=bool(cfg.get("deterministic", True)))
+    provenance = runtime_provenance(Path(__file__).resolve().parents[1])
+    json_dump(provenance, output_dir / "runtime_provenance.json")
     device = get_device(str(cfg.get("device", "auto")))
 
     bundle = load_model_bundle(cfg, device)
@@ -1575,12 +2202,37 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
     if not blocks:
         raise RuntimeError("No matrix blocks matched the selection rules")
 
+    selected_block_names = [block.name for block in blocks]
+    expected_exact_names = [str(value) for value in block_cfg.get("exact_names", [])]
+    is_scientific_confirmatory = bool(cfg.get("scientific_run", False)) and str(
+        analysis.get("compute_tier", "debug")
+    ) == "confirmatory"
+    if is_scientific_confirmatory and selected_block_names != expected_exact_names:
+        missing = [name for name in expected_exact_names if name not in selected_block_names]
+        unexpected = [name for name in selected_block_names if name not in expected_exact_names]
+        raise RuntimeError(
+            "Exact confirmatory block preregistration mismatch: "
+            f"missing={missing}, unexpected={unexpected}, "
+            f"selected_order={selected_block_names}"
+        )
+
     manifest = {
         "schema_version": SCHEMA_VERSION,
+        "package_version": provenance["software"]["package_source_version"],
         "status": "running",
         "config_hash": canonical_config_hash(cfg),
         "protocol_hash": protocol_config_hash(cfg),
         "runtime_identity_sha256": _runtime_identity(bundle.metadata, data_metadata),
+        "runtime_environment_sha256": provenance["runtime_environment_sha256"],
+        "runtime_provenance": provenance,
+        "selected_block_names": selected_block_names,
+        "selected_block_names_sha256": _name_list_digest(selected_block_names),
+        "expected_exact_block_names": expected_exact_names,
+        "expected_exact_block_names_sha256": _name_list_digest(expected_exact_names),
+        "control_block_names": [
+            str(value)
+            for value in analysis.get("controls", {}).get("block_names", [])
+        ],
         "scientific_run": bool(cfg.get("scientific_run", False)),
         "synthetic_backend": bundle.metadata.get("backend") == "tiny_causal_lm",
         "experiment_tier": str(analysis.get("compute_tier", "debug")),
@@ -1606,6 +2258,7 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
     alpha_rows: list[dict] = []
     damping_rows: list[dict] = []
     tau_rows: list[dict] = []
+    ridge_rows: list[dict] = []
     shift_rows: list[dict] = []
     failures: list[dict] = []
 
@@ -1640,13 +2293,14 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
                 }
             )
         else:
-            rows, boot, intervention, alpha, damping, tau = result
+            rows, boot, intervention, alpha, damping, tau, ridge = result
             block_rows.extend(rows)
             bootstrap_rows.extend(boot)
             intervention_rows.extend(intervention)
             alpha_rows.extend(alpha)
             damping_rows.extend(damping)
             tau_rows.extend(tau)
+            ridge_rows.extend(ridge)
             if rows:
                 first = rows[0]
                 shift_rows.append(
@@ -1677,6 +2331,11 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
         )
         _write_csv(output_dir / "alpha_sweep.csv", alpha_rows, CONTROL_COLUMNS)
         _write_csv(output_dir / "damping_sweep.csv", damping_rows, CONTROL_COLUMNS)
+        _write_csv(
+            output_dir / "ridge_sweep.csv",
+            ridge_rows,
+            RIDGE_SENSITIVITY_COLUMNS,
+        )
         _write_csv(output_dir / "spectral_gain_curve.csv", tau_rows)
         _write_csv(output_dir / "curvature_shift_records.csv", shift_rows)
         _write_csv(
@@ -1694,7 +2353,12 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
         "config_hash": canonical_config_hash(cfg),
         "protocol_hash": protocol_config_hash(cfg),
         "runtime_identity_sha256": manifest["runtime_identity_sha256"],
+        "runtime_environment_sha256": manifest["runtime_environment_sha256"],
         "num_selected_blocks": len(blocks),
+        "num_control_blocks_selected": sum(
+            _controls_enabled_for_block(analysis, block.name) for block in blocks
+        ),
+        "num_ridge_sensitivity_rows": len(ridge_rows),
         "num_successful_blocks": len({row["block_name"] for row in block_rows}),
         "num_failed_blocks": len(failures),
         "num_centered_positive": sum(float(row["delta_g"]) > 0 for row in centered),
@@ -1716,12 +2380,14 @@ def run_frozen_analysis(cfg: Mapping[str, Any]) -> Path:
                 "interventions.csv",
                 "alpha_sweep.csv",
                 "damping_sweep.csv",
+                "ridge_sweep.csv",
                 "spectral_gain_curve.csv",
                 "curvature_shift_records.csv",
                 "partial_trace_artifacts/index.json",
                 "block_failures.csv",
                 "summary.json",
                 "resolved_config.yaml",
+                "runtime_provenance.json",
             ],
         }
     )

@@ -1,8 +1,8 @@
-# Visible-Curvature Experiments — Canonical Balanced v1.2.1
+# Visible-Curvature Experiments — Canonical Balanced v1.3.0
 
-This repository contains the source code for the frozen-operator experiments accompanying the ICLR 2027 submission **“Optimizer-Visible Curvature: Information Limits and Minimax Order Reversals.”**
+This repository contains the frozen-operator experiment package accompanying the ICLR 2027 submission **“Optimizer-Visible Curvature: Information Limits and Minimax Order Reversals.”**
 
-The package evaluates a deliberately limited mechanism. Given a block curvature operator `H` and a fixed Adam- or Shampoo-form operator `P` constructed once from a reference second moment, it estimates
+The package studies one deliberately narrow object. At a fixed checkpoint, it constructs an Adam-form or Shampoo-form preconditioner once from a reference second-moment statistic and estimates
 
 \[
 K(P,H)=\operatorname{cond}\!\left(P^{1/2}HP^{1/2}\right),
@@ -10,44 +10,50 @@ K(P,H)=\operatorname{cond}\!\left(P^{1/2}HP^{1/2}\right),
 \Delta G=\log K_{\mathrm{Adam}}-\log K_{\mathrm{Shampoo}}.
 \]
 
-- `ΔG > 0`: frozen Shampoo-form residual conditioning is better than frozen Adam-form conditioning.
-- `ΔG < 0`: frozen Shampoo-form residual conditioning is worse.
-- `ΔG = 0`: the two residual condition metrics coincide at the reported precision.
+- `ΔG > 0`: the frozen Shampoo-form operator has the smaller residual condition metric.
+- `ΔG < 0`: the frozen Adam-form operator has the smaller residual condition metric.
+- `ΔG = 0`: the two reported residual condition metrics coincide at the available precision.
 
-The checkpoint curvature is an empirical **generalized Gauss–Newton (GGN)** operator for causal-language-model cross-entropy. It is not presented as the full nonconvex Hessian. The package does not establish online optimizer dominance, stochastic-risk dominance, or wall-clock superiority.
+The curvature operator is an empirical causal-language-model cross-entropy generalized Gauss–Newton operator. The second moment is built from centered mini-batch-mean block gradients collected in evaluation mode. Covariance and curvature use disjoint batch intervals. The package does **not** establish online optimizer dominance, stochastic-risk dominance, generalization superiority, or wall-clock superiority.
 
-## 1. What v1.2.1 contains
+## 1. What changed in v1.3.0
 
-The release has three connected workflows.
+v1.3.0 aligns the empirical controls and reporting with the exact scope of the frozen theory.
 
-v1.2.1 is a performance-and-safety patch over v1.2.0. It computes clustered-subspace projector distances from principal-angle overlap matrices instead of repeatedly forming ambient-size projectors, preventing the CPU-only reliability phase from performing hundreds of dense `768 x 768` SVDs. It also places a process-lifetime lock on each balanced output root, prints explicit GPU/core versus CPU-certification progress, and supports seed-specific GPU/thread pinning in generated policies.
+1. **Elasticity predictor decomposition**
+   - `baseline_width_mismatch = W_adam - (W_left + W_right)`;
+   - `delta_g_predicted_consumption` records only inverse-root utilization;
+   - `delta_g_predicted_full_proxy` adds the baseline-width mismatch;
+   - the legacy `delta_g_predicted` column aliases the full proxy.
 
-1. **Synthetic conditioning verification**
-   - Theorem 1 aligned/scalar/reversed Adam-form sign reversal.
-   - Flat-Kronecker paired invariants and Shampoo-form conditioning reversal.
-   - `α=0.25` versus `α=0.5` utilization-strength control.
-   - Damping attenuation.
+2. **Stronger diagnostic gates**
+   - left, right, and Adam regression quality;
+   - minimum mode count and curvature log-width;
+   - factor commutator, eigensolver residual, and negative-mass limits;
+   - preconditioner floor-dominance checks;
+   - explicit reason codes for degenerate factors and nonfinite predictors.
 
-2. **Independent weighted-Chebyshev verification**
-   - Extremal nodes `μ_j(K,T)`.
-   - Positive Lagrange weights summing to one.
-   - Equality of the constrained weighted-polynomial optimum and `C_T(K)`.
-   - Equality for the scaled Chebyshev polynomial.
-   - The three-group lower-envelope value `C_T(K)/3` used by the full Krylov construction.
+3. **Theory-aligned controls**
+   - joint damping reports `|ΔG|`;
+   - Shampoo-only damping reports `|G_shampoo|`, equivalently distance from the scalar-limit value `-G_adam`;
+   - the alpha control reports the signed within-block change `ΔG(α)-ΔG(1/4)`;
+   - assignment, alpha, and damping summaries are paired within block before cross-block aggregation.
 
-3. **Canonical balanced checkpoint pipeline**
-   - Centered and uncentered gradient second moments from one gradient stream.
-   - Frozen Adam- and Shampoo-form operators.
-   - Paired Lanczos endpoint estimation.
-   - Fixed curvature stabilization shift across all reliability stages.
-   - Spectral-gain curves over the declared truncation grid.
-   - Partial-trace matrix, clustered-subspace, and intervention-factor stability checks.
-   - Grouped calibrated bootstrap.
-   - Observed/aligned/reversed assignment controls.
-   - `α` control and separate joint versus Shampoo-only damping sweeps.
-   - Canonical tables used by aggregation and scientific paper export.
+4. **Metric-compatible reliability**
+   - ordinary and relative-`τ` truncated conditions are distinct estimands;
+   - adaptive stages, final comparison, and seed aggregation require metric agreement;
+   - truncated rows also require the same `τ`;
+   - primary scientific promotion is ordinary-only by default.
 
-The original single-run frozen analysis remains available for screening and software debugging. Scientific confirmatory aggregation and export use the balanced canonical path.
+5. **Lower compute cost**
+   - block-local Lanczos spectra are cached across repeated Adam and Shampoo control operators;
+   - the twelve primary OPT-125M blocks are separated from a four-block expensive-control subset.
+
+6. **Expanded reproducibility**
+   - source-tree, software, CUDA/cuDNN, hardware, and deterministic-execution metadata;
+   - twelve exact preregistered block names in the confirmatory template;
+   - optional ridge-sweep control;
+   - integrated three-group Theorem-3 witness verification.
 
 ## 2. Installation
 
@@ -60,71 +66,67 @@ python -m pip install --upgrade pip
 pip install -e '.[dev]'
 ```
 
-For Hugging Face checkpoint experiments:
+For Hugging Face checkpoint runs:
 
 ```bash
 pip install -e '.[network,dev]'
 ```
 
-The core dependencies are NumPy, pandas, SciPy, matplotlib, PyYAML, and PyTorch. No new runtime dependency was introduced in v1.2.1.
+For a CPU-only verification environment, install a CPU PyTorch wheel first and then install the package with `pip install -e '.[dev]'`.
 
-## 3. Software verification
+## 3. Offline verification
 
-### 3.1 Focused smoke workflow
+### 3.1 Full focused verification
 
 ```bash
 bash reproduce_smoke.sh
 ```
 
-This command:
+The script performs the following checks:
 
-1. compiles the package and runs the full test suite;
-2. runs synthetic conditioning and weighted-Chebyshev checks;
-3. runs the tiny causal-LM frozen analysis;
-4. validates and aggregates the debug output;
-5. creates the retained figures;
-6. verifies that a legacy/debug aggregate is rejected by scientific export;
-7. creates a visibly watermarked debug export.
+1. Python byte-code compilation and the complete test suite;
+2. analytic and dense synthetic conditioning checks;
+3. independent weighted-Chebyshev certificates;
+4. the integrated budget-dependent Theorem-3 witness;
+5. a tiny causal-LM frozen analysis;
+6. structural validation, aggregation, and the four retained figures;
+7. rejection of debug output by scientific export;
+8. explicit watermarking of an allowed debug export.
 
-Set `VC_SKIP_TESTS=1` only when the full tests were already run in the same source tree.
+Set `VC_SKIP_TESTS=1` only after the complete tests have passed in the same source tree.
 
-### 3.2 Balanced-pipeline smoke workflow
+### 3.2 Balanced-orchestrator smoke
 
 ```bash
 bash reproduce_balanced_smoke.sh
 ```
 
-This executes the adaptive reliability orchestrator with very small budgets. The expected pipeline status is `complete`; the scientific status may legitimately be `inconclusive`. The smoke output is not scientific evidence.
+The expected pipeline state is `complete`. The scientific state may be `inconclusive` because the smoke budgets are intentionally tiny. Smoke output is not scientific evidence.
 
-## 4. Synthetic verification
-
-Run:
+## 4. Synthetic theory verification
 
 ```bash
 python scripts/run_synthetic_theory.py \
   --config configs/synthetic_theory.yaml
 ```
 
-Outputs:
+Generated files:
 
 | File | Meaning |
 |---|---|
-| `theorem1_conditioning_results.csv` | Theorem 1 analytic and dense numerical condition numbers |
-| `flat_kronecker_conditioning_results.csv` | Flat-Kronecker invariants and aligned/Adam/reversed condition numbers |
-| `chebyshev_certificates.csv` | Weighted-Chebyshev nodes, weights, energies, optimum errors, and dimension bounds |
-| `theory_results.csv` | Backward-compatible combined conditioning table |
-| `theory_summary.json` | Aggregate pass/fail status and maximum numerical errors |
+| `theorem1_conditioning_results.csv` | Theorem-1 aligned/scalar/reversed condition identities |
+| `flat_kronecker_conditioning_results.csv` | Flat-Kronecker invariants and Shampoo order reversal |
+| `chebyshev_certificates.csv` | Independent weighted-Chebyshev minimax certificates |
+| `integrated_theorem3_witness.csv` | Common-initialization three-group witness and simultaneous certificates |
+| `theory_results.csv` | Combined backward-compatible conditioning table |
+| `theory_summary.json` | Aggregate pass/fail state and maximum errors |
 | `resolved_config.yaml` | Exact synthetic configuration |
 
-A valid run has `all_checks_passed=true` in `theory_summary.json`.
-
-The Chebyshev certificate is separate from the dense conditioning check because endpoint conditioning alone does not verify the full residual-polynomial/Krylov lower-bound device.
+A valid run has both `all_checks_passed=true` and `integrated_theorem3_all_checks_passed=true` in `theory_summary.json`.
 
 ## 5. Checkpoint workflow
 
 ### 5.1 Screening
-
-Screening is used only to select feasible, pre-registered block types and depths. It disables bootstrap and secondary controls.
 
 ```bash
 python scripts/run_frozen_analysis.py \
@@ -133,23 +135,32 @@ python scripts/validate_run.py \
   --output-dir outputs/hf_opt125m_screening_seed0
 ```
 
-Do not select confirmatory blocks by inspecting the sign of the screening `ΔG`. Record the selection rule before running confirmatory seeds.
+Screening is limited to numerical feasibility and architecture-based block selection. Do not select blocks by inspecting the sign of screening `ΔG`.
 
-### 5.2 Create seed-specific balanced policies
+### 5.2 Confirmatory block set
 
-Create an exact-block confirmatory YAML after screening, then generate at least three policies:
+`configs/hf_opt125m_confirmatory.yaml` contains twelve exact projection-weight names:
+
+- layers `0, 2, 4, 6, 8, 11`;
+- `q_proj.weight` and `out_proj.weight` at each selected layer.
+
+The four expensive-control blocks are the `q_proj` and `out_proj` weights at layers `0` and `11`. Every primary block still receives the centered observed `α=1/4` endpoint and bootstrap analysis.
+
+Scientific confirmatory validation converts `blocks.exact_names` into anchored regular expressions, checks uniqueness, and rejects discovery-only selection.
+
+### 5.3 Generate seed policies
 
 ```bash
 python scripts/make_balanced_policies.py \
-  --base-config configs/generated/hf_opt125m_confirmatory_exact_blocks.yaml \
+  --base-config configs/hf_opt125m_confirmatory.yaml \
   --seeds 0 1 2 \
   --gpus 0 1 2 \
   --cpu-threads 8
 ```
 
-The generated policy paths are written under `configs/generated_balanced/` by default. `--gpus` writes one `CUDA_VISIBLE_DEVICES` value per seed, so concurrently launched seeds do not all select physical GPU 0. `--cpu-threads` writes the same BLAS/OpenMP cap to each policy. Omit these two options for a sequential single-GPU run.
+Omit `--gpus` for sequential single-GPU execution. The generated policies keep the same exact block set, token order, model revision, dataset revision, and protocol while changing only the declared numerical seed and output root.
 
-### 5.3 Run balanced confirmatory seeds
+### 5.4 Run and validate each balanced seed
 
 ```bash
 for seed in 0 1 2; do
@@ -160,209 +171,137 @@ for seed in 0 1 2; do
 done
 ```
 
-A completed but numerically inconclusive run is a valid outcome. Use `--require-scientific-acceptance` only as a release gate after the protocol is frozen; do not tune numerical settings until a desired sign appears.
+A completed but inconclusive seed is a valid scientific outcome. Do not alter numerical thresholds or rerun blocks until a desired sign appears.
 
-Each output root is protected by `.balanced_run.lock`. A second live process targeting the same seed root fails immediately instead of racing on diagnostic or final files. The orchestrator now reports whether it is running a child core analysis (normally GPU-active) or parent-side endpoint/partial-trace certification (CPU-only), so a temporary absence of `nvidia-smi` memory use is distinguishable from a stalled process.
-
-## 6. Balanced reliability protocol
-
-### 6.1 Fixed curvature shift
-
-The first diagnostic stage estimates one stabilization shift per block. The mapping is written to
-
-```text
-curvature_shift_overrides.json
-```
-
-and reused without re-estimation in subsequent diagnostic, refinement, and final stages. Each core run records the applied value, source, target ridge, and override digest in `curvature_shift_records.csv`.
-
-The implementation is an adaptive PSD floor calibrated once and then frozen across stages. It should not be described as a newly estimated ridge at each Lanczos budget.
-
-### 6.2 Endpoint checks
-
-The endpoint schedule increases Lanczos steps and starts. Numerical acceptance requires both:
-
-- the core Ritz-residual checks; and
-- cross-budget stability of `K_adam`, `K_shampoo`, and `ΔG`.
-
-The final high-budget result must again pass its native endpoint checks and agree with the selected diagnostic stage. Repeated point stability cannot override a failed endpoint check.
-
-The labels in this package are **numerical acceptance checks**, not rigorous eigenvalue enclosures.
-
-### 6.3 Partial-trace geometry checks
-
-Aligned and reversed interventions depend on the estimated curvature-factor geometry. Across probe budgets, the pipeline checks:
-
-- negative spectral mass;
-- relative Frobenius change of left and right partial traces;
-- clustered eigenspace projector distance;
-- relative change of aligned and reversed intervention factors.
-
-Near-degenerate eigenvalues are compared as invariant subspaces rather than as individually ordered eigenvectors. An aligned/reversed control is inferentially usable only when the full partial-trace geometry check passes.
-
-### 6.4 Tau-refinement check
-
-The core writes `spectral_gain_curve.csv`, containing `K_adam`, `K_shampoo`, `ΔG`, and saturation information at every declared `τ`. The balanced layer classifies the curve as:
-
-- `stable_nonzero`;
-- `one_sided_with_coarse_saturation`;
-- `sign_flip`;
-- `all_saturated`;
-- `tau_refinement_unavailable`.
-
-A missing curve does not silently fall back to a weaker sign check.
-
-### 6.5 Bootstrap
-
-The primary interval is a **calibrated low-budget grouped bootstrap** around the high-budget point estimate. Scientific configs require the covariance batch count to be divisible by the bootstrap group size, preventing unequal final groups from receiving equal bootstrap weight.
-
-The interval is conditional on the fixed checkpoint, curvature batches, curvature shift, and probe stream. It is not a full training-trajectory uncertainty interval.
-
-## 7. Mechanism controls
-
-### 7.1 Assignment
-
-The observed covariance-factor spectra are reassigned in the curvature partial-trace eigenspaces:
-
-- `observed` — measured factor;
-- `aligned` — larger factor eigenvalues assigned to larger curvature-factor eigenvalues;
-- `reversed` — larger factor eigenvalues assigned to smaller curvature-factor eigenvalues.
-
-Adam remains fixed to the observed coordinate diagonal. The intervention tests the factor-operator channel; it does not claim that every intervened factor pair is the pair of marginals of a single realized full covariance.
-
-### 7.2 Utilization exponent
-
-The default practical factor exponent is `α=0.25`. The `α=0.5` branch is an idealized frozen inverse-square-root control. It is used to test whether stronger utilization amplifies both favorable and unfavorable assignments; it is not a recommendation to replace practical Shampoo.
-
-### 7.3 Damping
-
-Two damping sweeps are reported:
-
-- `joint` — change the normalized Adam and Shampoo damping coefficients together;
-- `shampoo_only` — keep the primary Adam spectrum fixed and change only Shampoo damping.
-
-The Shampoo-only sweep is the cleaner test of attenuation of the retained factor anisotropy. The joint sweep is a practical relative-hyperparameter control.
-
-## 8. Output contract
-
-### 8.1 Core frozen run
-
-| File | Purpose |
-|---|---|
-| `block_metrics.csv` | Centered and uncentered observed primary point estimates and numerical diagnostics |
-| `bootstrap_metrics.csv` | Grouped delta-only bootstrap replicates |
-| `interventions.csv` | Assignment controls |
-| `alpha_sweep.csv` | Utilization-exponent controls |
-| `damping_sweep.csv` | Joint and Shampoo-only damping controls |
-| `spectral_gain_curve.csv` | Per-`τ` direct gain curves and saturation states |
-| `curvature_shift_records.csv` | Applied fixed shift and provenance |
-| `partial_trace_artifacts/` | Left/right traces, spectra, and intervention factors used for geometry comparisons |
-| `block_failures.csv` | Captured block-level exceptions |
-| `run_manifest.json` | Runtime/protocol identity and required-output contract |
-| `summary.json` | Run-level summary |
-| `resolved_config.yaml` | Validated configuration |
-
-### 8.2 Balanced run root
-
-| File or directory | Purpose |
-|---|---|
-| `diagnostic_stages/` | Nested low-cost endpoint/probe runs |
-| `endpoint_convergence.csv` | Per-stage endpoint estimates and acceptance fields |
-| `partial_trace_convergence.csv` | Matrix, subspace, factor, and negative-mass comparisons |
-| `balanced_reliability_certificates.csv` | Selected budgets and block-level numerical decisions |
-| `curvature_shift_overrides.json` | Frozen blockwise shifts |
-| `generated_configs/` | Exact stage and final configs plus change manifests |
-| `logs/` | Runner and validator logs |
-| `final/` | High-budget run and canonical promoted tables |
-| `balanced_reliability_summary.json` | Root-level selected-budget summary |
-| `COMPLETED` | Pipeline completion marker |
-
-The final directory contains:
-
-- `canonical_block_metrics.csv` — centered, observed, `α=0.25` primary rows only;
-- `canonical_interventions.csv`;
-- `canonical_alpha_sweep.csv`;
-- `canonical_damping_sweep.csv`;
-- `canonical_spectral_gain_curve.csv`;
-- `balanced_block_metrics.csv` and balanced-annotated compatibility control tables;
-- `scientific_status.json`;
-- `balanced_reliability_summary.json`.
-
-`scientific_status.json` separates:
-
-```json
-{
-  "pipeline_status": "complete",
-  "scientific_status": "accepted or inconclusive",
-  "primary_inference_available": true
-}
-```
-
-## 9. Aggregation and paper export
-
-Aggregate balanced roots, not manually selected files from their `final/` directories:
+### 5.5 Aggregate seeds
 
 ```bash
 python scripts/aggregate_runs.py \
   --run-dir outputs/hf_opt125m_balanced_seed0 \
   --run-dir outputs/hf_opt125m_balanced_seed1 \
   --run-dir outputs/hf_opt125m_balanced_seed2 \
-  --output-dir outputs/hf_opt125m_balanced_aggregate \
-  --minimum-seed-count 3 \
-  --make-figures
+  --output-dir outputs/hf_opt125m_aggregate \
+  --minimum-seed-count 3
 ```
 
-The aggregator auto-resolves each balanced root to its canonical final tables. It refuses to mix balanced canonical and legacy sources unless `--allow-incompatible` is explicitly supplied for debugging.
+Seed consensus is unanimous and fail-closed. Any signed conflict, unresolved seed, metric mismatch, `τ` mismatch, or insufficient seed count yields `inconclusive`.
 
-Strict seed consensus is used:
+## 6. Estimands and controls
 
-- all reliable seeds positive → `positive`;
-- all reliable seeds negative → `negative`;
-- any conflicting or inconclusive seed, or insufficient seed count → `inconclusive`.
+### 6.1 Compatible gains
 
-Before scientific export, verify `aggregate_manifest.json` contains at least:
+For each comparison, `K_H`, `K_adam`, and `K_shampoo` are evaluated with the same declared condition metric. The exported gains are
 
-```text
-reliability_mode = balanced_canonical
-all_sources_balanced = true
-canonical_tables_used = true
-all_primary_rows_numerically_accepted = true
-all_balanced_sources_scientifically_accepted = true
-minimum_seed_count_met = true
-no_block_failures = true
-compatible_protocol_hashes = true
-compatible_runtime_identities = true
-immutable_revisions = true
-```
+\[
+G_{\mathrm{Adam}}=\log K_H-\log K_{\mathrm{Adam}},
+\qquad
+G_{\mathrm{Shampoo}}=\log K_H-\log K_{\mathrm{Shampoo}}.
+\]
 
-Export:
+The identity `ΔG = G_shampoo - G_adam` is recorded as `delta_g_from_gains`.
 
-```bash
-python scripts/export_paper_assets.py \
-  --output-dir outputs/hf_opt125m_balanced_aggregate \
-  --paper-root /absolute/path/to/paper/experiments
-```
+### 6.2 Elasticity proxy
 
-Scientific export fails closed unless the aggregate is balanced-canonical and all provenance/reliability gates pass. Debug export requires `--allow-debug-export` and stamps generated assets with:
+The full commuting–Kronecker proxy is
 
-```text
-DEBUG EXPORT -- NOT SCIENTIFIC EVIDENCE
-```
+\[
+\widehat{\Delta G}_{\mathrm{full}}
+=
+\underbrace{W_A-(W_L+W_R)}_{\text{baseline width mismatch}}
++
+\underbrace{\alpha(r_LW_L+r_RW_R)-\tfrac12r_AW_A}_{\text{utilization response}}.
+\]
 
-## 10. Provenance requirements
+This is a gated diagnostic proxy, not an exact predictor for a general noncommuting block.
 
-Scientific Hugging Face configurations require full 40-character immutable revisions for model, tokenizer, and dataset. The manifest additionally records source-row order, packed token-stream content, selected chunks, covariance/curvature intervals, protocol hash, and runtime identity.
+### 6.3 Assignment intervention
 
-Keep `data.order_seed` fixed across confirmatory seeds. Change only the experiment seed and output location unless a preregistered protocol explicitly says otherwise. Prefer the same accelerator model and software environment for every seed.
+Observed factor eigenvalue multisets are reassigned to curvature partial-trace eigenspaces as `aligned` or `reversed`. The observed Adam-form operator is held fixed. This is a surgical frozen-operator intervention; it need not correspond to a full covariance with the observed full spectrum and diagonal.
 
-## 11. Interpretation boundary
+### 6.4 Damping
 
-The software measures the residual conditioning of frozen operators at selected checkpoints and blocks. It does not prove:
+- `joint`: both normalized damping coefficients vary; the attenuation target is `|ΔG|`.
+- `shampoo_only`: Adam remains fixed; the attenuation target is `|G_shampoo|`, and `ΔG` approaches `-G_adam` rather than zero in a general block.
 
-- online Adam or Shampoo convergence ordering;
-- stochastic expected-risk ordering;
-- whole-network or architecture-wide optimizer dominance;
-- generalization superiority;
-- wall-clock or memory superiority.
+### 6.5 Alpha
 
-Report positive, negative, and inconclusive blocks. Do not discard a block because its sign is unfavorable or because a numerical gate produces an inconclusive result.
+The primary control is the signed paired contrast
+
+\[
+\Delta_\alpha=\Delta G(1/2)-\Delta G(1/4).
+\]
+
+An increase in `|ΔG|` is not assumed unless the baseline widths and scalar-comparator conditions justify that secondary interpretation. `α=1/2` is an idealized frozen control, not a proposed practical replacement.
+
+### 6.6 Ridge sweep
+
+When enabled, `ridge_sweep.csv` evaluates the same frozen covariance operators under the preregistered relative-ridge coefficients. This is separate from the `τ` sweep: ridge changes the stabilized curvature operator, while `τ` changes only the reported lower-tail condition metric.
+
+## 7. Numerical reliability
+
+The balanced orchestrator increases endpoint steps/starts and partial-trace probe counts. Scientific promotion requires:
+
+1. native Ritz-residual acceptance;
+2. stable `K_adam`, `K_shampoo`, and `ΔG` across consecutive budgets;
+3. unchanged condition metric and, for truncated rows, unchanged `τ`;
+4. a fixed blockwise curvature shift after the first calibration stage;
+5. stable partial-trace matrices, clustered eigenspaces, and intervention factors;
+6. final-versus-selected-stage agreement;
+7. enough finite grouped-bootstrap replicates;
+8. a bootstrap interval strictly on one side of zero;
+9. point-sign and interval-sign agreement;
+10. ordinary primary condition by default.
+
+The endpoint checks are numerical acceptance tests, not rigorous eigenvalue enclosures. Relative-`τ` truncated rows remain available as secondary diagnostics even when they are not promotable.
+
+## 8. Core output files
+
+| File | Content |
+|---|---|
+| `block_metrics.csv` | Primary centered and uncentered block metrics, endpoints, gains, predictor components, diagnostics, and bootstrap summary |
+| `bootstrap_metrics.csv` | Grouped covariance-bootstrap replicate endpoints |
+| `interventions.csv` | Observed/aligned/reversed frozen-operator controls |
+| `alpha_sweep.csv` | Raw `ΔG(α)` and signed contrast from `α=1/4` |
+| `damping_sweep.csv` | Joint and Shampoo-only rows with declared estimand and control value |
+| `ridge_sweep.csv` | Optional curvature-ridge sweep rows |
+| `spectral_gain_curve.csv` | Relative-`τ` condition curves for every direct comparison |
+| `curvature_shift_records.csv` | Applied shift, source, target ridge, and override digest |
+| `partial_trace_artifacts/` | Matrices and factor data used for geometry stability checks |
+| `runtime_provenance.json` | Source, software, hardware, CUDA, and deterministic-execution metadata |
+| `run_manifest.json` | Immutable model/data identity, selected blocks, stream intervals, and required outputs |
+| `block_failures.csv` | Captured block-level exceptions |
+
+## 9. Balanced and aggregate outputs
+
+Balanced seed roots contain adaptive stage outputs, fixed shift overrides, reliability certificates, canonical final tables, and `scientific_status.json`.
+
+Aggregation additionally produces:
+
+| File | Content |
+|---|---|
+| `paired_seed_summary.csv` | Metric-compatible seed medians, intervals, and unanimous sign consensus |
+| `elasticity_prediction_rows.csv` | Reliability-gated actual/predicted sign rows |
+| `elasticity_prediction_summary.csv` | Eligible count, sign accuracy, balanced accuracy, and Spearman statistic |
+| `paired_control_contrasts.csv` | Within-block assignment, alpha, and damping contrasts |
+| `aggregate_manifest.json` | Protocol, runtime, numerical, provenance, and export eligibility checks |
+
+Scientific LaTeX export is fail-closed. Debug export requires an explicit flag and is marked with `DEBUG EXPORT -- NOT SCIENTIFIC EVIDENCE`.
+
+## 10. Reproducibility boundary
+
+Every run records:
+
+- immutable model, tokenizer, and dataset revisions;
+- fixed token-order and selected-content hashes;
+- exact block names and control subset;
+- source-tree digest and git state;
+- Python, PyTorch, numerical-library, CUDA, and cuDNN versions;
+- CPU, GPU, platform, and thread-environment metadata;
+- deterministic-algorithm settings;
+- covariance and curvature stream intervals.
+
+For confirmatory aggregation, use the same GPU architecture and software environment for all seeds. Numerical seeds are replication of endpoint/probe/bootstrap randomness on one fixed checkpoint and token stream; they are not independent model-training replicates.
+
+## 11. Scope limitations
+
+This package measures fixed-checkpoint residual conditioning. It does not model endogenous preconditioner evolution, momentum, bias correction, stale roots, grafting, fresh stochastic-gradient coupling, whole-network trajectories, generalization, or systems cost. Report positive, negative, and inconclusive blocks together.

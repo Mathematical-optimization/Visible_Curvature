@@ -39,12 +39,18 @@ def _eligibility_failures(manifest: dict) -> list[str]:
         "source_manifests_present": bool(manifest.get("source_manifests_present")),
         "compatible_protocol_hashes": bool(manifest.get("compatible_protocol_hashes")),
         "compatible_runtime_identities": bool(manifest.get("compatible_runtime_identities")),
+        "compatible_runtime_environments": bool(
+            manifest.get("compatible_runtime_environments")
+        ),
         "no_block_failures": bool(manifest.get("no_block_failures")),
         "scientific_run": bool(manifest.get("scientific_run")),
         "non_synthetic": not bool(manifest.get("synthetic_backend")),
         "immutable_revisions": bool(manifest.get("immutable_revisions")),
         "confirmatory_tier": str(manifest.get("experiment_tier")) == "confirmatory",
         "minimum_seed_count_met": bool(manifest.get("minimum_seed_count_met")),
+        "primary_metric_compatible": bool(
+            manifest.get("all_primary_metric_compatible", False)
+        ),
         "balanced_canonical": str(manifest.get("reliability_mode"))
         == "balanced_canonical",
         "all_sources_balanced": bool(manifest.get("all_sources_balanced")),
@@ -99,6 +105,86 @@ def _table_rows(frame: pd.DataFrame, columns: list[tuple[str, str]]) -> list[str
     return rows
 
 
+def _format_number(value: object, *, mode: str = "fixed") -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "--"
+    if not math.isfinite(number):
+        return "--"
+    if mode == "integer":
+        return str(int(round(number)))
+    if mode == "scientific":
+        return f"{number:.1e}"
+    return f"{number:.3f}"
+
+
+def _primary_table_lines(primary: pd.DataFrame) -> list[str]:
+    """Build the paper-facing primary table with explicit estimand metadata."""
+    lines = [
+        r"\begin{tabular}{llrrrllllrl}",
+        r"\toprule",
+        (
+            "Block & Type & $K_{\\mathrm{Ad}}$ & $K_{\\mathrm{Sh}}$ & "
+            "$\\Delta G$ & Bootstrap CI & Metric & $\\tau$ & Tail & Seeds & "
+            "Consensus " + LATEX_ROW_END
+        ),
+        r"\midrule",
+    ]
+    for _, row in primary.sort_values("block_name").iterrows():
+        low = _format_number(row.get("bootstrap_ci_low_median"))
+        high = _format_number(row.get("bootstrap_ci_high_median"))
+        interval = "--" if "--" in {low, high} else f"[{low}, {high}]"
+        metric = str(row.get("condition_metric_consensus", "not_recorded"))
+        tau = (
+            _format_number(row.get("fallback_tau_consensus"), mode="scientific")
+            if metric == "truncated"
+            else "--"
+        )
+        cells = [
+            _escape(row.get("block_name", "")),
+            _escape(row.get("block_type", "")),
+            _format_number(row.get("K_adam_median")),
+            _format_number(row.get("K_shampoo_median")),
+            _format_number(row.get("delta_g_median")),
+            interval,
+            _escape(metric),
+            tau,
+            _escape(row.get("tail_localized_consensus", "not_recorded")),
+            _format_number(row.get("n_seeds"), mode="integer"),
+            _escape(row.get("reliable_ordering", "inconclusive")),
+        ]
+        lines.append(" & ".join(cells) + " " + LATEX_ROW_END)
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    return lines
+
+
+def _summarize_control_table(
+    frame: pd.DataFrame,
+    *,
+    source: str,
+    group_keys: list[str],
+) -> tuple[pd.DataFrame, str]:
+    """Aggregate a control table using its declared, theory-aligned estimand."""
+    work = frame.copy()
+    keys = list(group_keys)
+    if source == "damping_sweep.csv" and "sweep_mode" in work.columns:
+        keys = ["sweep_mode", *keys]
+        if "control_estimand" in work.columns:
+            keys.append("control_estimand")
+        value = "control_value" if "control_value" in work.columns else "delta_g"
+    elif source == "alpha_sweep.csv" and "alpha_delta_from_practical" in work.columns:
+        value = "alpha_delta_from_practical"
+        if "control_estimand" in work.columns:
+            keys.append("control_estimand")
+    else:
+        value = "delta_g"
+        if "control_estimand" in work.columns:
+            keys.append("control_estimand")
+    return work.groupby(keys, as_index=False)[value].median(), value
+
+
+
 def export_paper_assets(
     output_dir: str | Path,
     paper_root: str | Path,
@@ -118,14 +204,17 @@ def export_paper_assets(
                 "reliability_mode must be balanced_canonical"
             )
         raise ValueError(
-            "Aggregate is not eligible for scientific paper export: " + ", ".join(failures)
+            "Aggregate is not eligible for scientific paper export: "
+            + ", ".join(failures)
         )
     debug = bool(failures)
 
     summary = pd.read_csv(output / "paired_seed_summary.csv")
     primary = _primary(summary)
     if primary.empty:
-        raise ValueError("No primary centered observed alpha=0.25 rows available for export")
+        raise ValueError(
+            "No primary centered observed alpha=0.25 rows available for export"
+        )
 
     positive = int((primary["reliable_ordering"] == "positive").sum())
     negative = int((primary["reliable_ordering"] == "negative").sum())
@@ -146,23 +235,7 @@ def export_paper_assets(
         )
     )
 
-    block_lines = [
-        r"\begin{tabular}{lrrl}",
-        r"\toprule",
-        "Block & $\\Delta G$ & Seeds & Consensus " + LATEX_ROW_END,
-        r"\midrule",
-        *_table_rows(
-            primary.sort_values("block_name"),
-            [
-                ("block_name", "text"),
-                ("delta_g_median", "number"),
-                ("n_seeds", "number"),
-                ("reliable_ordering", "text"),
-            ],
-        ),
-        r"\bottomrule",
-        r"\end{tabular}",
-    ]
+    block_lines = _primary_table_lines(primary)
     paths.append(
         _write(
             paper / "block_gain_autogen.tex",
@@ -171,8 +244,124 @@ def export_paper_assets(
         )
     )
 
+    prediction_path = output / "elasticity_prediction_summary.csv"
+    prediction = (
+        pd.read_csv(prediction_path)
+        if prediction_path.exists() and prediction_path.stat().st_size > 0
+        else pd.DataFrame()
+    )
+    prediction_lines = [
+        r"\begin{tabular}{lrrrr}",
+        r"\toprule",
+        "Predictor & Eligible & Spearman & Sign acc. & Balanced acc. "
+        + LATEX_ROW_END,
+        r"\midrule",
+    ]
+    if prediction.empty:
+        prediction_lines.append(
+            "No eligible predictor rows & 0 & -- & -- & -- " + LATEX_ROW_END
+        )
+    else:
+        prediction_lines.extend(
+            _table_rows(
+                prediction.sort_values("predictor_name"),
+                [
+                    ("predictor_name", "text"),
+                    ("n_eligible_rows", "number"),
+                    ("spearman", "number"),
+                    ("sign_accuracy", "number"),
+                    ("sign_balanced_accuracy", "number"),
+                ],
+            )
+        )
+    prediction_lines += [r"\bottomrule", r"\end{tabular}"]
+    paths.append(
+        _write(
+            paper / "elasticity_prediction_autogen.tex",
+            "\n".join(prediction_lines),
+            debug=debug,
+        )
+    )
+
+    paired_path = output / "paired_control_contrasts.csv"
+    paired_controls = (
+        pd.read_csv(paired_path)
+        if paired_path.exists() and paired_path.stat().st_size > 0
+        else pd.DataFrame()
+    )
+    if not paired_controls.empty and "paired_reliable" in paired_controls.columns:
+        accepted = paired_controls["paired_reliable"]
+        if accepted.dtype != bool:
+            accepted = accepted.astype(str).str.lower().isin(
+                {"true", "1", "yes"}
+            )
+        paired_accepted = paired_controls[accepted].copy()
+    else:
+        paired_accepted = paired_controls.iloc[0:0].copy()
+
+    paired_lines = [
+        r"\begin{tabular}{lllrr}",
+        r"\toprule",
+        "Contrast & Assignment/mode & Comparison & Median paired change & Pairs "
+        + LATEX_ROW_END,
+        r"\midrule",
+    ]
+    if paired_accepted.empty:
+        paired_lines.append(
+            "No accepted paired controls & -- & -- & -- & 0 " + LATEX_ROW_END
+        )
+    else:
+        for column in ("assignment", "sweep_mode", "comparison_label"):
+            if column not in paired_accepted.columns:
+                paired_accepted[column] = ""
+            paired_accepted[column] = (
+                paired_accepted[column].fillna("").astype(str)
+            )
+        grouped_paired = (
+            paired_accepted.groupby(
+                [
+                    "contrast_type",
+                    "assignment",
+                    "sweep_mode",
+                    "comparison_label",
+                ],
+                as_index=False,
+                dropna=False,
+            )
+            .agg(
+                median_contrast=("contrast_value", "median"),
+                n_pairs=("contrast_value", "count"),
+            )
+        )
+        for _, row in grouped_paired.iterrows():
+            mode_parts = [
+                str(row["assignment"]).strip(),
+                str(row["sweep_mode"]).strip(),
+            ]
+            mode = " / ".join(_escape(value) for value in mode_parts if value)
+            comparison = str(row["comparison_label"]).strip()
+            paired_lines.append(
+                f"{_escape(row['contrast_type'])} & {mode or '--'} & "
+                f"{_escape(comparison) if comparison else '--'} & "
+                f"{float(row['median_contrast']):.3f} & {int(row['n_pairs'])} "
+                + LATEX_ROW_END
+            )
+    paired_lines += [r"\bottomrule", r"\end{tabular}"]
+    paths.append(
+        _write(
+            paper / "paired_controls_autogen.tex",
+            "\n".join(paired_lines),
+            debug=debug,
+        )
+    )
+
     control_specs = [
-        ("interventions.csv", "assignment_autogen.tex", ["assignment"], "Assignment"),
+        (
+            "interventions.csv",
+            "assignment_autogen.tex",
+            ["assignment"],
+            "Assignment",
+        ),
         (
             "alpha_sweep.csv",
             "alpha_autogen.tex",
@@ -199,19 +388,86 @@ def export_paper_assets(
             raise ValueError(
                 f"No numerically accepted rows available in {source}"
             )
-        if source == "damping_sweep.csv" and "sweep_mode" in frame.columns:
-            group_keys = ["sweep_mode", *group_keys]
-            label = "Mode / " + label
-        grouped = frame.groupby(group_keys, as_index=False)["delta_g"].median()
+
+        if source == "alpha_sweep.csv" and not paired_accepted.empty:
+            paired_source = paired_accepted[
+                paired_accepted["contrast_type"].astype(str)
+                == "alpha_signed_change_from_practical"
+            ].copy()
+            if not paired_source.empty:
+                paired_source["alpha"] = paired_source["comparison_label"]
+                grouped = (
+                    paired_source.groupby(
+                        ["assignment", "alpha"],
+                        as_index=False,
+                        dropna=False,
+                    )["contrast_value"]
+                    .median()
+                )
+                value_column = "contrast_value"
+            else:
+                grouped, value_column = _summarize_control_table(
+                    frame, source=source, group_keys=group_keys
+                )
+        elif source == "damping_sweep.csv" and not paired_accepted.empty:
+            paired_source = paired_accepted[
+                paired_accepted["contrast_type"].astype(str)
+                == "damping_change_from_minimum"
+            ].copy()
+            if not paired_source.empty:
+                paired_source["damping_coefficient"] = paired_source[
+                    "comparison_label"
+                ]
+                grouped = (
+                    paired_source.groupby(
+                        [
+                            "sweep_mode",
+                            "assignment",
+                            "damping_coefficient",
+                            "control_estimand",
+                        ],
+                        as_index=False,
+                        dropna=False,
+                    )["contrast_value"]
+                    .median()
+                )
+                value_column = "contrast_value"
+            else:
+                grouped, value_column = _summarize_control_table(
+                    frame, source=source, group_keys=group_keys
+                )
+        else:
+            grouped, value_column = _summarize_control_table(
+                frame, source=source, group_keys=group_keys
+            )
+
+        effective_keys = [
+            key for key in grouped.columns if key != value_column
+        ]
+        value_label = (
+            r"median paired change"
+            if value_column == "contrast_value"
+            else (
+                r"median declared control value"
+                if value_column == "control_value"
+                else (
+                    r"median $\Delta G(\alpha)-\Delta G(1/4)$"
+                    if value_column == "alpha_delta_from_practical"
+                    else r"median $\Delta G$"
+                )
+            )
+        )
         lines = [
             r"\begin{tabular}{lr}",
             r"\toprule",
-            f"{label} & median $\\Delta G$ " + LATEX_ROW_END,
+            f"{label} & {value_label} " + LATEX_ROW_END,
             r"\midrule",
         ]
         for _, row in grouped.iterrows():
-            key = " / ".join(_escape(row[name]) for name in group_keys)
-            lines.append(f"{key} & {float(row['delta_g']):.3f} " + LATEX_ROW_END)
+            key = " / ".join(_escape(row[name]) for name in effective_keys)
+            lines.append(
+                f"{key} & {float(row[value_column]):.3f} " + LATEX_ROW_END
+            )
         lines += [r"\bottomrule", r"\end{tabular}"]
         paths.append(
             _write(paper / destination, "\n".join(lines), debug=debug)

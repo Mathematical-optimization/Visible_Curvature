@@ -22,12 +22,19 @@ python - <<'PY'
 import json
 from pathlib import Path
 summary = json.loads(Path("outputs/synthetic_theory/theory_summary.json").read_text())
-if not summary.get("all_checks_passed") or not summary.get("chebyshev_all_checks_passed"):
-    raise SystemExit("synthetic theory or Chebyshev verification failed")
+if (
+    not summary.get("all_checks_passed")
+    or not summary.get("chebyshev_all_checks_passed")
+    or not summary.get("integrated_theorem3_all_checks_passed")
+):
+    raise SystemExit(
+        "synthetic theory, Chebyshev, or integrated Theorem-3 verification failed"
+    )
 for name in (
     "theorem1_conditioning_results.csv",
     "flat_kronecker_conditioning_results.csv",
     "chebyshev_certificates.csv",
+    "integrated_theorem3_witness.csv",
 ):
     if not (Path("outputs/synthetic_theory") / name).is_file():
         raise SystemExit(f"missing synthetic output: {name}")
@@ -63,4 +70,4 @@ python scripts/export_paper_assets.py \
 grep -q "DEBUG EXPORT -- NOT SCIENTIFIC EVIDENCE" \
   outputs/smoke_paper/debug/network_results_autogen.tex
 
-echo "Canonical Balanced v1.2.1 focused verification complete"
+echo "Canonical Balanced v1.3.0 focused verification complete"

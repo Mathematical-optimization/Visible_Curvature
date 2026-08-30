@@ -66,6 +66,7 @@ class ReliabilityThresholds:
     require_partial_trace_artifacts: bool = False
     bootstrap_minimum_finite_reps: int = 100
     zero_tolerance: float = 1e-10
+    allow_truncated_primary: bool = False
 
 
 def _normalise_name(value: str) -> str:
@@ -99,6 +100,27 @@ def _finite_float(value: Any) -> float:
     except (TypeError, ValueError):
         return float("nan")
     return result if math.isfinite(result) else float("nan")
+
+
+def _condition_metric_name(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    name = str(value).strip().lower()
+    if not name or name == "nan":
+        return "unknown"
+    if name == "truncated_condition":
+        return "truncated"
+    return name
+
+
+def _same_tau(left: Any, right: Any, tolerance: float = 1.0e-12) -> bool:
+    a = _finite_float(left)
+    b = _finite_float(right)
+    return bool(
+        math.isfinite(a)
+        and math.isfinite(b)
+        and math.isclose(a, b, rel_tol=0.0, abs_tol=tolerance)
+    )
 
 
 def _relative_change(current: float, previous: float, floor: float = 1e-30) -> float:
@@ -207,6 +229,7 @@ def thresholds_from_policy(policy: Mapping[str, Any]) -> ReliabilityThresholds:
         ),
         bootstrap_minimum_finite_reps=int(rel.get("bootstrap_minimum_finite_reps", 100)),
         zero_tolerance=float(rel.get("zero_tolerance", 1e-10)),
+        allow_truncated_primary=bool(rel.get("allow_truncated_primary", False)),
     )
 
 
@@ -352,6 +375,7 @@ def summarise_stage(output_dir: Path, stage: StageSpec, policy: Mapping[str, Any
         "negative_mass_left": ("partial_trace_negative_spectral_mass_left",),
         "negative_mass_right": ("partial_trace_negative_spectral_mass_right",),
         "condition_metric": ("condition_metric",),
+        "fallback_tau": ("fallback_tau",),
         "adam_condition_saturated": ("adam_condition_saturated",),
         "shampoo_condition_saturated": ("shampoo_condition_saturated",),
         "partial_trace_artifact": ("partial_trace_artifact",),
@@ -387,6 +411,24 @@ def certify_convergence(stage_rows: pd.DataFrame, thresholds: ReliabilityThresho
         group = group.sort_values("stage_index").reset_index(drop=True)
         current = group.iloc[-1]
         previous = group.iloc[-2] if len(group) >= 2 else None
+        current_metric = _condition_metric_name(current.get("condition_metric"))
+        previous_metric = (
+            _condition_metric_name(previous.get("condition_metric"))
+            if previous is not None
+            else "unknown"
+        )
+        condition_metric_consistent = bool(
+            previous is not None
+            and current_metric != "unknown"
+            and current_metric == previous_metric
+        )
+        fallback_tau_consistent = bool(
+            condition_metric_consistent
+            and (
+                current_metric != "truncated"
+                or _same_tau(current.get("fallback_tau"), previous.get("fallback_tau"))
+            )
+        )
         k_adam_change = float("inf")
         k_shampoo_change = float("inf")
         delta_change = float("inf")
@@ -402,6 +444,8 @@ def certify_convergence(stage_rows: pd.DataFrame, thresholds: ReliabilityThresho
         enough_stages = len(group) >= thresholds.minimum_stage_count
         endpoint_stable = (
             enough_stages
+            and condition_metric_consistent
+            and fallback_tau_consistent
             and k_adam_change <= thresholds.k_relative_change_tolerance
             and k_shampoo_change <= thresholds.k_relative_change_tolerance
             and delta_change <= thresholds.delta_g_absolute_change_tolerance
@@ -497,6 +541,10 @@ def certify_convergence(stage_rows: pd.DataFrame, thresholds: ReliabilityThresho
             endpoint_reasons.append("native_endpoint_check")
         if not enough_stages:
             endpoint_reasons.append("insufficient_stages")
+        if not condition_metric_consistent:
+            endpoint_reasons.append("condition_metric_changed")
+        if not fallback_tau_consistent:
+            endpoint_reasons.append("fallback_tau_changed")
         if k_adam_change > thresholds.k_relative_change_tolerance:
             endpoint_reasons.append("K_adam_not_stable")
         if k_shampoo_change > thresholds.k_relative_change_tolerance:
@@ -527,6 +575,10 @@ def certify_convergence(stage_rows: pd.DataFrame, thresholds: ReliabilityThresho
             "selected_K_adam": _finite_float(current["K_adam"]),
             "selected_K_shampoo": _finite_float(current["K_shampoo"]),
             "selected_delta_g": _finite_float(current["delta_g"]),
+            "selected_condition_metric": current_metric,
+            "selected_fallback_tau": _finite_float(current.get("fallback_tau")),
+            "condition_metric_consistent": condition_metric_consistent,
+            "fallback_tau_consistent": fallback_tau_consistent,
             "K_adam_relative_change": k_adam_change,
             "K_shampoo_relative_change": k_shampoo_change,
             "delta_g_absolute_change": delta_change,
@@ -723,6 +775,8 @@ def annotate_final_outputs(
     final_endpoint_col = _find_column(
         annotated, "endpoint_numerically_reliable"
     )
+    metric_col = _find_column(annotated, "condition_metric")
+    fallback_tau_col = _find_column(annotated, "fallback_tau")
     threshold = thresholds_from_policy(policy)
     primary_policy = policy.get("primary", {})
 
@@ -735,6 +789,8 @@ def annotate_final_outputs(
     final_k_shampoo_changes: list[float] = []
     final_delta_changes: list[float] = []
     final_endpoint_flags: list[bool] = []
+    final_metric_agreements: list[bool] = []
+    primary_metric_promotable: list[bool] = []
 
     for _, row in annotated.iterrows():
         primary = True
@@ -769,6 +825,38 @@ def annotate_final_outputs(
         if not final_endpoint_ok:
             reasons.append("final_endpoint")
 
+        final_metric = _condition_metric_name(
+            row[metric_col] if metric_col is not None else None
+        )
+        selected_metric = _condition_metric_name(
+            row.get("selected_condition_metric")
+        )
+        metric_agreement = bool(
+            final_metric != "unknown"
+            and selected_metric != "unknown"
+            and final_metric == selected_metric
+            and (
+                final_metric != "truncated"
+                or _same_tau(
+                    row[fallback_tau_col] if fallback_tau_col is not None else None,
+                    row.get("selected_fallback_tau"),
+                )
+            )
+        )
+        final_metric_agreements.append(metric_agreement)
+        if not metric_agreement:
+            reasons.append("final_condition_metric_disagreement")
+        metric_promotable = bool(
+            final_metric == "ordinary"
+            or (
+                final_metric == "truncated"
+                and threshold.allow_truncated_primary
+            )
+        )
+        primary_metric_promotable.append(metric_promotable)
+        if primary and not metric_promotable:
+            reasons.append("truncated_primary_not_allowed")
+
         final_k_adam_change = _relative_change(
             _finite_float(row[k_adam_col]),
             _finite_float(row.get("selected_K_adam")),
@@ -781,7 +869,8 @@ def annotate_final_outputs(
             delta - _finite_float(row.get("selected_delta_g"))
         )
         final_agreement = bool(
-            final_k_adam_change <= threshold.k_relative_change_tolerance
+            metric_agreement
+            and final_k_adam_change <= threshold.k_relative_change_tolerance
             and final_k_shampoo_change
             <= threshold.k_relative_change_tolerance
             and final_delta_change
@@ -838,6 +927,8 @@ def annotate_final_outputs(
             and ci_sign != 0
             and point_sign == ci_sign
             and tau_ok
+            and metric_agreement
+            and metric_promotable
         )
         label = (
             "positive"
@@ -850,6 +941,8 @@ def annotate_final_outputs(
         reasons_out.append(",".join(dict.fromkeys(reasons)))
 
     annotated["final_endpoint_numerically_accepted"] = final_endpoint_flags
+    annotated["final_condition_metric_agreement"] = final_metric_agreements
+    annotated["primary_condition_metric_promotable"] = primary_metric_promotable
     annotated["final_K_adam_relative_change"] = final_k_adam_changes
     annotated["final_K_shampoo_relative_change"] = final_k_shampoo_changes
     annotated["final_delta_g_absolute_change"] = final_delta_changes
@@ -887,18 +980,77 @@ def annotate_final_outputs(
         endpoint_native = _find_column(
             table, "endpoint_numerically_reliable"
         )
+        control_metric_col = _find_column(table, "condition_metric")
+        control_tau_col = _find_column(table, "fallback_tau")
         reliable: list[bool] = []
+        metric_agreements: list[bool] = []
+        metric_promotable: list[bool] = []
+        control_reasons: list[str] = []
         for _, row in table.iterrows():
+            reasons: list[str] = []
             assignment_value = (
                 str(row[assignment]) if assignment is not None else "observed"
             )
             needs_basis = assignment_value in {"aligned", "reversed"}
-            ok = _as_bool(row.get("adaptive_endpoint_certified"))
+
+            endpoint_ok = _as_bool(row.get("adaptive_endpoint_certified"))
+            if not endpoint_ok:
+                reasons.append("adaptive_endpoint")
             if endpoint_native is not None:
-                ok = ok and _as_bool(row[endpoint_native])
+                native_ok = _as_bool(row[endpoint_native])
+                endpoint_ok = endpoint_ok and native_ok
+                if not native_ok:
+                    reasons.append("final_endpoint")
+
+            control_metric = _condition_metric_name(
+                row[control_metric_col]
+                if control_metric_col is not None
+                else None
+            )
+            selected_metric = _condition_metric_name(
+                row.get("selected_condition_metric")
+            )
+            metric_ok = bool(
+                control_metric != "unknown"
+                and selected_metric != "unknown"
+                and control_metric == selected_metric
+                and (
+                    control_metric != "truncated"
+                    or _same_tau(
+                        row[control_tau_col]
+                        if control_tau_col is not None
+                        else None,
+                        row.get("selected_fallback_tau"),
+                    )
+                )
+            )
+            metric_agreements.append(metric_ok)
+            if not metric_ok:
+                reasons.append("condition_metric")
+
+            promotable = bool(
+                control_metric == "ordinary"
+                or (
+                    control_metric == "truncated"
+                    and threshold.allow_truncated_primary
+                )
+            )
+            metric_promotable.append(promotable)
+            if not promotable:
+                reasons.append("truncated_metric_not_allowed")
+
+            basis_ok = True
             if needs_basis:
-                ok = ok and _as_bool(row.get("partial_trace_checks_passed"))
-            reliable.append(bool(ok))
+                basis_ok = _as_bool(row.get("partial_trace_checks_passed"))
+                if not basis_ok:
+                    reasons.append("partial_trace")
+
+            ok = bool(endpoint_ok and basis_ok and metric_ok and promotable)
+            reliable.append(ok)
+            control_reasons.append(",".join(dict.fromkeys(reasons)))
+        table["balanced_control_condition_metric_agreement"] = metric_agreements
+        table["balanced_control_condition_metric_promotable"] = metric_promotable
+        table["balanced_control_reliability_reasons"] = control_reasons
         table["balanced_reliable_for_inference"] = reliable
         _write_csv_atomic(table, final_dir / ("balanced_" + filename))
         _write_csv_atomic(table, final_dir / canonical_name)

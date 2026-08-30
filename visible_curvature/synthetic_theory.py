@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -240,6 +241,440 @@ def _flat_kronecker_rows(section: Mapping[str, Any], tolerance: float) -> list[d
     return rows
 
 
+
+def _normalized_signed_effective_map(
+    s: float,
+    *,
+    kappa: float,
+    r: float,
+    alpha: float,
+    rho: float,
+    sigma: int,
+) -> float:
+    value = float(s)
+    if sigma == 1:
+        factor_statistic = value ** (0.5 * r)
+    elif sigma == -1:
+        factor_statistic = (kappa**r) * value ** (-0.5 * r)
+    else:
+        raise ValueError("sigma must be +1 or -1")
+    raw = value / (factor_statistic + rho) ** (2.0 * alpha)
+    if sigma == 1:
+        at_one = 1.0 / (1.0 + rho) ** (2.0 * alpha)
+    else:
+        at_one = 1.0 / (kappa**r + rho) ** (2.0 * alpha)
+    return raw / at_one
+
+
+def _invert_monotone_map(
+    target: float,
+    *,
+    kappa: float,
+    r: float,
+    alpha: float,
+    rho: float,
+    sigma: int,
+) -> float:
+    lower = 1.0
+    upper = kappa**2
+    target_value = float(target)
+    lower_value = _normalized_signed_effective_map(
+        lower, kappa=kappa, r=r, alpha=alpha, rho=rho, sigma=sigma
+    )
+    upper_value = _normalized_signed_effective_map(
+        upper, kappa=kappa, r=r, alpha=alpha, rho=rho, sigma=sigma
+    )
+    scale = max(abs(target_value), 1.0)
+    if target_value < lower_value - 1.0e-12 * scale or target_value > upper_value + 1.0e-12 * scale:
+        raise ValueError(
+            f"target {target_value} lies outside monotone image "
+            f"[{lower_value}, {upper_value}]"
+        )
+    if math.isclose(target_value, lower_value, rel_tol=0.0, abs_tol=1.0e-14 * scale):
+        return lower
+    if math.isclose(target_value, upper_value, rel_tol=0.0, abs_tol=1.0e-14 * scale):
+        return upper
+    for _ in range(120):
+        midpoint = 0.5 * (lower + upper)
+        mapped = _normalized_signed_effective_map(
+            midpoint, kappa=kappa, r=r, alpha=alpha, rho=rho, sigma=sigma
+        )
+        if mapped < target_value:
+            lower = midpoint
+        else:
+            upper = midpoint
+    return 0.5 * (lower + upper)
+
+
+def _weighted_value_space_optimum(nodes: np.ndarray, weights: np.ndarray) -> float:
+    count = int(nodes.size)
+    lagrange = np.empty(count, dtype=np.float64)
+    for index in range(count):
+        numerator = float(np.prod(-np.delete(nodes, index)))
+        denominator = float(
+            np.prod(nodes[index] - np.delete(nodes, index))
+        )
+        lagrange[index] = numerator / denominator
+    return float(1.0 / np.sum((lagrange * lagrange) / weights))
+
+
+def integrated_theorem3_witness(
+    *,
+    kappa: float,
+    r: float,
+    alpha: float,
+    rho: float,
+    degree: int,
+    tolerance: float = 1.0e-8,
+) -> dict[str, Any]:
+    """Instantiate the full three-group, reciprocal-closed Theorem-3 witness.
+
+    The validator constructs the scalar, aligned, and reversed pulled-back
+    Chebyshev groups inside one flat Kronecker factor and one common
+    initialization. It verifies the paired invariants, one-third energy split,
+    dimension bounds, and all three simultaneous lower certificates.
+    """
+    kappa = float(kappa)
+    r = float(r)
+    alpha = float(alpha)
+    rho = float(rho)
+    T = int(degree)
+    tolerance = float(tolerance)
+    if not math.isfinite(kappa) or kappa <= 1.0:
+        raise ValueError("kappa must be finite and greater than one")
+    if not math.isfinite(r) or r < 0.0:
+        raise ValueError("r must be finite and nonnegative")
+    if not math.isfinite(alpha) or not 0.0 < alpha <= 0.5:
+        raise ValueError("alpha must lie in (0, 0.5]")
+    if r > 1.0 / alpha + 1.0e-12:
+        raise ValueError("the aligned effective map requires r <= 1/alpha")
+    if not math.isfinite(rho) or rho < 0.0:
+        raise ValueError("rho must be finite and nonnegative")
+    if T < 1 or T != degree:
+        raise ValueError("degree must be a positive integer")
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+
+    strength = ((kappa**r + rho) / (1.0 + rho)) ** alpha
+    K_scalar = kappa**2
+    K_aligned = K_scalar / strength**2
+    K_reversed = K_scalar * strength**2
+    if K_aligned <= 1.0 + 1.0e-12:
+        raise ValueError(
+            "integrated finite-degree certificate excludes the exact-inverse aligned endpoint"
+        )
+
+    certificates = {
+        "scalar": weighted_chebyshev_certificate(K_scalar, T),
+        "aligned": weighted_chebyshev_certificate(K_aligned, T),
+        "reversed": weighted_chebyshev_certificate(K_reversed, T),
+    }
+    scalar_nodes = np.asarray(certificates["scalar"]["nodes"], dtype=np.float64)
+    aligned_targets = np.asarray(
+        certificates["aligned"]["nodes"], dtype=np.float64
+    )
+    reversed_targets = np.asarray(
+        certificates["reversed"]["nodes"], dtype=np.float64
+    )
+    aligned_nodes = np.asarray(
+        [
+            _invert_monotone_map(
+                value,
+                kappa=kappa,
+                r=r,
+                alpha=alpha,
+                rho=rho,
+                sigma=1,
+            )
+            for value in aligned_targets
+        ],
+        dtype=np.float64,
+    )
+    reversed_nodes = np.asarray(
+        [
+            _invert_monotone_map(
+                value,
+                kappa=kappa,
+                r=r,
+                alpha=alpha,
+                rho=rho,
+                sigma=-1,
+            )
+            for value in reversed_targets
+        ],
+        dtype=np.float64,
+    )
+
+    reserved = np.concatenate(
+        [np.sqrt(scalar_nodes), np.sqrt(aligned_nodes), np.sqrt(reversed_nodes)]
+    )
+    eigenvalues = np.concatenate([reserved, kappa / reserved])
+    factor_dimension = 1
+    while factor_dimension < int(eigenvalues.size):
+        factor_dimension *= 2
+    if factor_dimension > int(eigenvalues.size):
+        eigenvalues = np.concatenate(
+            [
+                eigenvalues,
+                np.full(
+                    factor_dimension - int(eigenvalues.size),
+                    math.sqrt(kappa),
+                    dtype=np.float64,
+                ),
+            ]
+        )
+
+    reciprocal_sorted = np.sort(kappa / eigenvalues)
+    eigen_sorted = np.sort(eigenvalues)
+    reciprocal_error = float(
+        np.linalg.norm(eigen_sorted - reciprocal_sorted)
+        / max(np.linalg.norm(eigen_sorted), np.finfo(np.float64).tiny)
+    )
+
+    Q = _hadamard(factor_dimension)
+    b = torch.as_tensor(eigenvalues, dtype=torch.float64)
+    B = Q @ torch.diag(b) @ Q.T
+    c_plus_values = b.pow(r)
+    c_minus_values = (kappa**r) * b.pow(-r)
+    C_plus = Q @ torch.diag(c_plus_values) @ Q.T
+    C_minus = Q @ torch.diag(c_minus_values) @ Q.T
+
+    factor_spectrum_error = float(
+        torch.linalg.vector_norm(
+            torch.sort(c_plus_values).values - torch.sort(c_minus_values).values
+        )
+        / torch.linalg.vector_norm(c_plus_values).clamp_min(
+            torch.finfo(torch.float64).tiny
+        )
+    )
+    covariance_plus_spectrum = torch.sort(
+        torch.outer(c_plus_values, c_plus_values).reshape(-1)
+    ).values
+    covariance_minus_spectrum = torch.sort(
+        torch.outer(c_minus_values, c_minus_values).reshape(-1)
+    ).values
+    covariance_spectrum_error = float(
+        torch.linalg.vector_norm(
+            covariance_plus_spectrum - covariance_minus_spectrum
+        )
+        / torch.linalg.vector_norm(covariance_plus_spectrum).clamp_min(
+            torch.finfo(torch.float64).tiny
+        )
+    )
+    covariance_plus_diagonal = torch.outer(torch.diag(C_plus), torch.diag(C_plus))
+    covariance_minus_diagonal = torch.outer(
+        torch.diag(C_minus), torch.diag(C_minus)
+    )
+    covariance_diagonal_error = float(
+        torch.linalg.vector_norm(
+            covariance_plus_diagonal - covariance_minus_diagonal
+        )
+        / torch.linalg.vector_norm(covariance_plus_diagonal).clamp_min(
+            torch.finfo(torch.float64).tiny
+        )
+    )
+    flat_diagonal_spread = max(
+        float(torch.diag(C_plus).max() - torch.diag(C_plus).min()),
+        float(torch.diag(C_minus).max() - torch.diag(C_minus).min()),
+    ) / max(float(torch.diag(C_plus).abs().max()), torch.finfo(torch.float64).tiny)
+
+    group_slices = {
+        "scalar": slice(0, T + 1),
+        "aligned": slice(T + 1, 2 * (T + 1)),
+        "reversed": slice(2 * (T + 1), 3 * (T + 1)),
+    }
+    group_nodes = {
+        "scalar": scalar_nodes,
+        "aligned": aligned_nodes,
+        "reversed": reversed_nodes,
+    }
+    group_weights = {
+        name: np.asarray(certificate["weights"], dtype=np.float64)
+        for name, certificate in certificates.items()
+    }
+
+    x_groups: dict[str, torch.Tensor] = {}
+    group_energies: dict[str, float] = {}
+    for name, group_slice in group_slices.items():
+        matrix = torch.zeros(
+            factor_dimension, factor_dimension, dtype=torch.float64
+        )
+        nodes = group_nodes[name]
+        weights = group_weights[name]
+        for local_index, factor_index in enumerate(
+            range(group_slice.start, group_slice.stop)
+        ):
+            q = Q[:, factor_index]
+            coefficient = math.sqrt(
+                float(weights[local_index]) / (3.0 * float(nodes[local_index]))
+            )
+            matrix.add_(coefficient * torch.outer(q, q))
+        x_groups[name] = matrix
+        group_energies[name] = float(
+            0.5 * torch.sum(matrix * (B @ matrix @ B))
+        )
+    x0 = sum(x_groups.values(), torch.zeros_like(B))
+    total_energy = float(0.5 * torch.sum(x0 * (B @ x0 @ B)))
+
+    effective_actual = {
+        "scalar": scalar_nodes,
+        "aligned": np.asarray(
+            [
+                _normalized_signed_effective_map(
+                    value,
+                    kappa=kappa,
+                    r=r,
+                    alpha=alpha,
+                    rho=rho,
+                    sigma=1,
+                )
+                for value in aligned_nodes
+            ],
+            dtype=np.float64,
+        ),
+        "reversed": np.asarray(
+            [
+                _normalized_signed_effective_map(
+                    value,
+                    kappa=kappa,
+                    r=r,
+                    alpha=alpha,
+                    rho=rho,
+                    sigma=-1,
+                )
+                for value in reversed_nodes
+            ],
+            dtype=np.float64,
+        ),
+    }
+    target_nodes = {
+        "scalar": scalar_nodes,
+        "aligned": aligned_targets,
+        "reversed": reversed_targets,
+    }
+
+    row: dict[str, Any] = {
+        "experiment": "integrated_theorem3_witness",
+        "kappa": kappa,
+        "r": r,
+        "alpha": alpha,
+        "rho": rho,
+        "degree": T,
+        "strength": strength,
+        "K_scalar": K_scalar,
+        "K_aligned": K_aligned,
+        "K_reversed": K_reversed,
+        "factor_dimension": factor_dimension,
+        "full_dimension": factor_dimension**2,
+        "factor_dimension_bound": 12 * (T + 1),
+        "full_dimension_bound": 144 * (T + 1) ** 2,
+        "reciprocal_closure_error": reciprocal_error,
+        "factor_spectrum_error": factor_spectrum_error,
+        "covariance_spectrum_error": covariance_spectrum_error,
+        "covariance_diagonal_error": covariance_diagonal_error,
+        "flat_diagonal_relative_spread": flat_diagonal_spread,
+        "adam_operator_is_scalar": bool(flat_diagonal_spread <= tolerance),
+        "total_initial_energy": total_energy,
+    }
+
+    certificate_passes: list[bool] = []
+    node_errors: list[float] = []
+    energy_errors: list[float] = []
+    for name in ("scalar", "aligned", "reversed"):
+        actual_nodes = effective_actual[name]
+        expected_nodes = target_nodes[name]
+        node_error = float(
+            np.linalg.norm(actual_nodes - expected_nodes)
+            / max(np.linalg.norm(expected_nodes), np.finfo(np.float64).tiny)
+        )
+        optimum = _weighted_value_space_optimum(actual_nodes, group_weights[name])
+        expected_barrier = float(certificates[name]["C_T"])
+        certificate_ratio = optimum / expected_barrier
+        energy = group_energies[name]
+        energy_error = abs(energy - 1.0 / 6.0) / (1.0 / 6.0)
+        row[f"{name}_node_error"] = node_error
+        row[f"{name}_initial_energy"] = energy
+        row[f"{name}_energy_relative_error"] = energy_error
+        row[f"{name}_weighted_optimum"] = optimum
+        row[f"{name}_C_T"] = expected_barrier
+        row[f"{name}_three_group_lower_bound"] = expected_barrier / 3.0
+        row[f"{name}_certificate_ratio"] = certificate_ratio
+        node_errors.append(node_error)
+        energy_errors.append(energy_error)
+        certificate_passes.append(
+            node_error <= 100.0 * tolerance
+            and energy_error <= 100.0 * tolerance
+            and abs(certificate_ratio - 1.0) <= 100.0 * tolerance
+            and bool(certificates[name]["all_checks_passed"])
+        )
+
+    orthogonality_error = 0.0
+    names = list(x_groups)
+    for left_index, left_name in enumerate(names):
+        for right_name in names[left_index + 1 :]:
+            orthogonality_error = max(
+                orthogonality_error,
+                abs(float(torch.sum(x_groups[left_name] * x_groups[right_name]))),
+            )
+    row["group_orthogonality_error"] = orthogonality_error
+    row["dimension_bounds_passed"] = bool(
+        factor_dimension < 12 * (T + 1)
+        and factor_dimension**2 < 144 * (T + 1) ** 2
+    )
+    row["paired_invariants_passed"] = bool(
+        reciprocal_error <= 100.0 * tolerance
+        and factor_spectrum_error <= 100.0 * tolerance
+        and covariance_spectrum_error <= 100.0 * tolerance
+        and covariance_diagonal_error <= 100.0 * tolerance
+        and flat_diagonal_spread <= 100.0 * tolerance
+    )
+    row["common_initialization_passed"] = bool(
+        abs(total_energy - 0.5) <= 100.0 * tolerance
+        and max(energy_errors) <= 100.0 * tolerance
+        and orthogonality_error <= 100.0 * tolerance
+    )
+    row["simultaneous_certificates_passed"] = bool(all(certificate_passes))
+    row["check_passed"] = bool(
+        row["dimension_bounds_passed"]
+        and row["paired_invariants_passed"]
+        and row["common_initialization_passed"]
+        and row["simultaneous_certificates_passed"]
+    )
+    return row
+
+
+def _integrated_theorem3_rows(
+    section: Mapping[str, Any], tolerance: float
+) -> list[dict[str, Any]]:
+    kappa_values = [float(value) for value in section.get("kappa_values", [8.0])]
+    r_values = [float(value) for value in section.get("r_values", [2.0])]
+    alpha_values = [float(value) for value in section.get("alpha_values", [0.25])]
+    rho_values = [float(value) for value in section.get("rho_values", [1.0])]
+    degrees = [int(value) for value in section.get("T_values", [3])]
+    rows: list[dict[str, Any]] = []
+    for kappa in kappa_values:
+        for r in r_values:
+            for alpha in alpha_values:
+                for rho in rho_values:
+                    strength = ((kappa**r + rho) / (1.0 + rho)) ** alpha
+                    if kappa**2 / strength**2 <= 1.0 + 1.0e-12:
+                        continue
+                    for degree in degrees:
+                        rows.append(
+                            integrated_theorem3_witness(
+                                kappa=kappa,
+                                r=r,
+                                alpha=alpha,
+                                rho=rho,
+                                degree=degree,
+                                tolerance=tolerance,
+                            )
+                        )
+    if not rows:
+        raise ValueError("integrated Theorem-3 grid contains no non-endpoint witness")
+    return rows
+
+
 def _chebyshev_rows(section: Mapping[str, Any]) -> list[dict[str, Any]]:
     condition_numbers = [float(value) for value in section.get("K_values", [4.0, 16.0, 64.0])]
     degrees = [int(value) for value in section.get("T_values", [2, 3, 4, 8])]
@@ -291,6 +726,15 @@ def run_synthetic_theory(cfg: Mapping[str, Any]) -> Path:
     chebyshev_frame = pd.DataFrame(_chebyshev_rows(section.get("chebyshev", {})))
     chebyshev_frame.to_csv(output_dir / "chebyshev_certificates.csv", index=False)
 
+    integrated_frame = pd.DataFrame(
+        _integrated_theorem3_rows(
+            section.get("integrated_theorem3", {}), tolerance
+        )
+    )
+    integrated_frame.to_csv(
+        output_dir / "integrated_theorem3_witness.csv", index=False
+    )
+
     zero = theorem3[theorem3["rho"] == 0.0]
     alpha_doubling_passed = True
     for (_, _, assignment), group in zero.groupby(["kappa", "r", "assignment"]):
@@ -318,11 +762,15 @@ def run_synthetic_theory(cfg: Mapping[str, Any]) -> Path:
     chebyshev_all_checks = bool(
         not chebyshev_frame.empty and chebyshev_frame["all_checks_passed"].all()
     )
+    integrated_all_checks = bool(
+        not integrated_frame.empty and integrated_frame["check_passed"].all()
+    )
     all_checks = bool(
         frame["check_passed"].all()
         and alpha_doubling_passed
         and damping_attenuation_passed
         and chebyshev_all_checks
+        and integrated_all_checks
     )
     summary = {
         "all_checks_passed": all_checks,
@@ -337,6 +785,14 @@ def run_synthetic_theory(cfg: Mapping[str, Any]) -> Path:
         "damping_attenuation_passed": bool(damping_attenuation_passed),
         "chebyshev_all_checks_passed": chebyshev_all_checks,
         "chebyshev_certificate_count": int(len(chebyshev_frame)),
+        "integrated_theorem3_all_checks_passed": integrated_all_checks,
+        "integrated_theorem3_witness_count": int(len(integrated_frame)),
+        "maximum_integrated_theorem3_covariance_spectrum_error": float(
+            integrated_frame["covariance_spectrum_error"].max()
+        ),
+        "maximum_integrated_theorem3_covariance_diagonal_error": float(
+            integrated_frame["covariance_diagonal_error"].max()
+        ),
         "maximum_chebyshev_quadratic_optimum_relative_error": float(
             chebyshev_frame["quadratic_optimum_relative_error"].max()
         ),

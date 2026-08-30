@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
@@ -22,6 +23,9 @@ _RELIABILITY_KEYS = {
     "minimum_bootstrap_reps",
     "max_factor_negative_mass",
     "max_factor_eigen_residual",
+    "min_elasticity_modes",
+    "min_curvature_log_width",
+    "max_preconditioner_floored_fraction",
 }
 
 
@@ -53,6 +57,21 @@ def _validate_frozen_config(cfg: Dict[str, Any]) -> None:
         raise ValueError("data.backend must be synthetic_tokens or hf_text")
     data["order_seed"] = int(data.get("order_seed", 0))
 
+    blocks = cfg.setdefault("blocks", {})
+    raw_exact_names = blocks.get("exact_names", [])
+    if isinstance(raw_exact_names, str):
+        raw_exact_names = [raw_exact_names]
+    exact_names = [str(value) for value in raw_exact_names]
+    if any(not value.strip() for value in exact_names):
+        raise ValueError("blocks.exact_names must contain nonempty names")
+    if len(set(exact_names)) != len(exact_names):
+        raise ValueError("blocks.exact_names must not contain duplicates")
+    if exact_names:
+        blocks["exact_names"] = exact_names
+        blocks["include"] = [f"^{re.escape(name)}$" for name in exact_names]
+        blocks["max_blocks"] = len(exact_names)
+        blocks["selection_strategy"] = "first"
+
     analysis = cfg.setdefault("analysis", {})
     forbidden = sorted(set(analysis).intersection({"nci_samples", "nci_skip_batches", "frozen"}))
     if forbidden:
@@ -74,6 +93,21 @@ def _validate_frozen_config(cfg: Dict[str, Any]) -> None:
         raise ValueError("analysis.assignments must not contain duplicates")
     analysis["assignments"] = assignments
 
+    controls = analysis.setdefault("controls", {})
+    raw_control_names = controls.get("block_names", [])
+    if isinstance(raw_control_names, str):
+        raw_control_names = [raw_control_names]
+    control_names = [str(value) for value in raw_control_names]
+    if any(not value.strip() for value in control_names):
+        raise ValueError("analysis.controls.block_names must contain nonempty names")
+    if len(set(control_names)) != len(control_names):
+        raise ValueError("analysis.controls.block_names must not contain duplicates")
+    controls["block_names"] = control_names
+    if exact_names and not set(control_names).issubset(exact_names):
+        raise ValueError(
+            "analysis control block_names must be a subset of blocks.exact_names"
+        )
+
     alpha_values = [float(value) for value in analysis.setdefault("alpha_sweep", {}).get("values", [0.25, 0.5])]
     if not alpha_values or any(not 0.0 < value <= 0.5 for value in alpha_values):
         raise ValueError("analysis.alpha_sweep.values must lie in (0, 0.5]")
@@ -92,6 +126,28 @@ def _validate_frozen_config(cfg: Dict[str, Any]) -> None:
             "analysis.damping_sweep.modes may contain unique joint and shampoo_only values"
         )
     damping_sweep["modes"] = damping_modes
+
+    ridge_sensitivity = analysis.setdefault("ridge_sensitivity", {})
+    ridge_sensitivity["enabled"] = bool(ridge_sensitivity.get("enabled", False))
+    ridge_coefficients = [
+        float(value)
+        for value in ridge_sensitivity.get(
+            "coefficients", [1.0e-6, 1.0e-5, 1.0e-4]
+        )
+    ]
+    if any(not math.isfinite(value) or value < 0.0 for value in ridge_coefficients):
+        raise ValueError(
+            "analysis.ridge_sensitivity.coefficients must be finite and nonnegative"
+        )
+    if len(set(ridge_coefficients)) != len(ridge_coefficients):
+        raise ValueError(
+            "analysis.ridge_sensitivity.coefficients must contain unique values"
+        )
+    if ridge_sensitivity["enabled"] and not ridge_coefficients:
+        raise ValueError(
+            "analysis.ridge_sensitivity.coefficients must be nonempty when enabled"
+        )
+    ridge_sensitivity["coefficients"] = ridge_coefficients
 
     covariance = analysis.setdefault("covariance", {})
     curvature = analysis.setdefault("curvature", {})
@@ -130,6 +186,11 @@ def _validate_frozen_config(cfg: Dict[str, Any]) -> None:
         _require_commit(data.get("tokenizer_revision"), "data.tokenizer_revision")
         if "order_seed" not in data:
             raise ValueError("scientific_run requires data.order_seed")
+        if tier == "confirmatory" and not exact_names:
+            raise ValueError(
+                "Scientific confirmatory runs require blocks.exact_names; "
+                "unanchored or discovery-only regex selection is not permitted"
+            )
         if tier == "confirmatory" and reps < 100:
             raise ValueError(
                 f"Scientific confirmatory runs require at least 100 delta-only bootstrap replicates; got {reps}"

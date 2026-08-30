@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.0 — 2026-08-30
+
+### Scientific alignment
+
+- decomposed the elasticity proxy into baseline-width, utilization, and full-proxy terms;
+- added Adam-regression, mode-count, log-width, and floor-dominance gates;
+- corrected joint-damping, Shampoo-only damping, and alpha-control estimands;
+- enforced ordinary/truncated metric and truncation-parameter consistency across budgets, final runs, and seeds;
+- made ordinary condition the default requirement for signed scientific promotion;
+- added block-local Lanczos spectrum caching;
+- preregistered twelve exact primary blocks and a four-block expensive-control subset;
+- added reliability-gated elasticity summaries and within-block paired control contrasts;
+- added source/software/hardware runtime provenance and environment compatibility checks;
+- added an optional ridge sweep;
+- added an integrated common-initialization Theorem-3 witness validator;
+- expanded paper tables with condition metric, truncation, tail, endpoint, and interval metadata.
+
 ## v1.2.1 — Partial-trace performance and execution safety
 
 - Replace per-cluster ambient projector spectral norms with the equivalent principal-angle overlap formula, eliminating repeated full-size SVDs during CPU-only partial-trace certification.

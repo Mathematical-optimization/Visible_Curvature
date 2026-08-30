@@ -68,50 +68,86 @@ def plot_assignment_intervention(output_dir: str | Path, output_path: str | Path
     return _save(fig, Path(output_path))
 
 
+def _alpha_plot_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Aggregate the signed alpha response relative to practical alpha=1/4."""
+    value = (
+        "alpha_delta_from_practical"
+        if "alpha_delta_from_practical" in frame.columns
+        else "delta_g"
+    )
+    grouped = frame.groupby(["assignment", "alpha"], as_index=False)[value].median()
+    return grouped, value
+
+
+def _damping_plot_data(frame: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate each damping mode using its explicitly declared estimand."""
+    work = frame.copy()
+    if "sweep_mode" not in work.columns:
+        work["sweep_mode"] = "joint"
+    if "control_estimand" not in work.columns:
+        work["control_estimand"] = np.where(
+            work["sweep_mode"].astype(str).eq("shampoo_only")
+            & ("G_shampoo" in work.columns),
+            "abs_g_shampoo",
+            "abs_delta_g",
+        )
+    if "control_value" not in work.columns:
+        values = []
+        for _, row in work.iterrows():
+            if str(row.get("sweep_mode", "joint")) == "shampoo_only" and "G_shampoo" in work.columns:
+                values.append(abs(float(row["G_shampoo"])))
+            else:
+                values.append(abs(float(row["delta_g"])))
+        work["control_value"] = values
+    group_keys = [
+        "sweep_mode",
+        "assignment",
+        "damping_coefficient",
+        "control_estimand",
+    ]
+    return work.groupby(group_keys, as_index=False)["control_value"].median()
+
+
+
 def plot_alpha_response(output_dir: str | Path, output_path: str | Path) -> Path:
     frame = _accepted_controls(_read(Path(output_dir) / "alpha_sweep.csv"))
-    grouped = frame.groupby(["assignment", "alpha"], as_index=False)["delta_g"].median()
+    grouped, value = _alpha_plot_data(frame)
     fig, ax = plt.subplots(figsize=(5.5, 4.0))
     for assignment in ("observed", "aligned", "reversed"):
         subset = grouped[grouped["assignment"] == assignment].sort_values("alpha")
         if not subset.empty:
-            ax.plot(subset["alpha"], subset["delta_g"], marker="o", label=assignment)
+            ax.plot(subset["alpha"], subset[value], marker="o", label=assignment)
     ax.axhline(0.0, linewidth=1.0)
     ax.set_xlabel(r"factor utilization exponent $\alpha$")
-    ax.set_ylabel(r"median $\Delta G$")
-    ax.set_title("Utilization-strength response")
+    ylabel = (
+        r"median $\Delta G(\alpha)-\Delta G(1/4)$"
+        if value == "alpha_delta_from_practical"
+        else r"median $\Delta G$ (legacy rows)"
+    )
+    ax.set_ylabel(ylabel)
+    ax.set_title("Signed utilization-strength response")
     ax.legend()
     return _save(fig, Path(output_path))
 
 
 def plot_damping_attenuation(output_dir: str | Path, output_path: str | Path) -> Path:
     frame = _accepted_controls(_read(Path(output_dir) / "damping_sweep.csv"))
-    group_keys = ["assignment", "damping_coefficient"]
-    if "sweep_mode" in frame.columns:
-        group_keys.insert(0, "sweep_mode")
-    grouped = frame.groupby(group_keys, as_index=False)["delta_g"].median()
+    grouped = _damping_plot_data(frame)
     fig, ax = plt.subplots(figsize=(5.5, 4.0))
-    modes = (
-        list(dict.fromkeys(grouped["sweep_mode"].astype(str)))
-        if "sweep_mode" in grouped.columns
-        else [""]
-    )
+    modes = list(dict.fromkeys(grouped["sweep_mode"].astype(str)))
     for mode in modes:
-        mode_frame = (
-            grouped[grouped["sweep_mode"].astype(str) == mode]
-            if mode
-            else grouped
-        )
+        mode_frame = grouped[grouped["sweep_mode"].astype(str) == mode]
         for assignment in ("observed", "aligned", "reversed"):
             subset = mode_frame[mode_frame["assignment"] == assignment].sort_values("damping_coefficient")
             if not subset.empty:
-                label = f"{mode}: {assignment}" if mode else assignment
-                ax.plot(subset["damping_coefficient"], subset["delta_g"].abs(), marker="o", label=label)
+                estimand = str(subset["control_estimand"].iloc[0])
+                label = f"{mode}: {assignment} ({estimand})"
+                ax.plot(subset["damping_coefficient"], subset["control_value"], marker="o", label=label)
     ax.set_xscale("symlog", linthresh=1.0e-4)
     ax.set_xlabel("normalized damping coefficient")
-    ax.set_ylabel(r"median $|\Delta G|$")
-    ax.set_title("Damping attenuation")
-    ax.legend()
+    ax.set_ylabel(r"median declared attenuation target")
+    ax.set_title("Theory-aligned damping attenuation")
+    ax.legend(fontsize="small")
     return _save(fig, Path(output_path))
 
 
