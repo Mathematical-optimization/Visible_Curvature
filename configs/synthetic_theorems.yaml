@@ -1,0 +1,62 @@
+run:
+  name: synthetic-theorems
+  seed: 0
+  device: cpu
+  dtype: float64
+  deterministic: true
+model:
+  family: decoder
+  checkpoint: null
+  kwargs: {}
+data:
+  family: synthetic_language
+  path: null
+  num_examples: 8
+  batch_size: 4
+  kwargs: {}
+blocks:
+  include: ['.*']
+  exclude: []
+  min_numel: 2
+  max_numel: null
+  tile_rows: null
+  tile_cols: null
+curvature:
+  kind: fisher
+  shift: 0.0
+  exact_max_dim: 512
+  lanczos_steps: 32
+  lanczos_starts: 2
+  positive_threshold: 1.0e-12
+  residual_tolerance: 1.0e-8
+  slq_probes: 8
+  slq_steps: 24
+moments:
+  centered: true
+  backend: loop
+  accumulation_dtype: float64
+  max_examples: null
+geometry:
+  alpha_values: [0.25, 0.5]
+  damping_ratios: [0.0, 0.001, 0.1, 1.0, 100.0]
+  adam_damping: 0.0
+  response_vectors: 8
+  sign_threshold: 0.22314355131420976
+  exact_condition_max_dim: 512
+  shampoo_damping_ratio: 0.0
+  random_assignment_repeats: 4
+  dynamics_steps: 12
+  grafting_scales: [0.1, 1.0, 10.0]
+training:
+  optimizer: adamw
+  steps: 0
+  learning_rate: 0.001
+  weight_decay: 0.0
+  checkpoint_steps: [0]
+  root_frequency: 5
+  beta1: 0.9
+  beta2: 0.99
+  epsilon: 1.0e-8
+  alpha: 0.25
+  grafting: none
+output_dir: experiments/outputs

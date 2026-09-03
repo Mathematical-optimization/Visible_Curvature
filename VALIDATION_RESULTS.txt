@@ -1,0 +1,98 @@
+HISTORICAL RECORD — SUPERSEDED BY VERIFICATION_REPORT_v1.2.0.md
+=================================================================
+The results below predate the v1.2.0 submission-hardening changes and are kept
+only for provenance.
+
+OPTIMIZER-VISIBLE CURVATURE EXPERIMENT SUITE — VALIDATION RECORD
+================================================================
+
+VALIDATION DATE
+- 2026-08-31
+
+ENVIRONMENT USED FOR THE INCLUDED CPU VALIDATION
+- Python: 3.13.5
+- Platform: Linux x86_64
+- PyTorch: 2.10.0+cpu
+- NumPy: 2.3.5
+- SciPy: 1.17.0
+- pandas: 2.2.3
+- PyYAML: 6.0.3
+- matplotlib: 3.10.8
+- pytest: 9.0.2
+- CUDA available: no
+
+UNIT AND INTEGRATION TESTS: PASS
+- Command: PYTHONPATH=experiments/src pytest experiments/tests -q
+- Result: 50 passed, 0 failed.
+- The 18 emitted warnings are PyTorch deprecation warnings for torch.jit.script
+  reached by higher-order autograd tests; they are not test failures.
+- Source and test byte-compilation completed successfully with compileall.
+
+SYNTHETIC THEOREM RECOVERY: PASS
+- The information-pair and flat-Kronecker constructions were regenerated.
+- 12 result rows were written.
+- The maximum relative error in
+      K_plus * K_minus = K_H ** 2
+  was 2.9802322387695313e-16.
+- The synthetic fan figure was generated as a valid single-page PDF.
+
+CPU END-TO-END SMOKE RUNS: PASS
+- Decoder / empirical Fisher:
+  3 geometry, 120 intervention, 495 dynamics, and 90 continuation rows.
+- ViT / empirical Fisher:
+  3 geometry, 120 intervention, 495 dynamics, and 90 continuation rows.
+- Decoder / GGN:
+  1 geometry, 23 intervention, 75 dynamics, and 20 continuation rows.
+- ViT / GGN:
+  1 geometry, 23 intervention, 75 dynamics, and 20 continuation rows.
+- Decoder / MatrixShampoo optimizer-state extraction:
+  1 geometry, 23 intervention, 75 dynamics, and 20 continuation rows.
+- The AdamW smoke run exposed a bias-corrected outside-root state operator.
+- The Shampoo smoke run exposed the saved root direction before the
+  gradient-dependent grafting scalar.
+
+CHECKPOINT SWEEPS: PASS
+- Decoder sweep: 4 checkpoints, 8 geometry rows, 264 intervention rows,
+  1,254 dynamics rows, and 20 stale-factor comparisons.
+- ViT sweep: 4 checkpoints, 8 geometry rows, 264 intervention rows,
+  1,254 dynamics rows, and 20 stale-factor comparisons.
+- Each sweep wrote a strict JSON H1--H6 status record. These statuses are
+  smoke-pipeline diagnostics, not scientific evidence.
+
+AGGREGATION AND STATISTICS: PASS
+- 16 geometry rows and 528 intervention rows were combined.
+- Cluster-bootstrap sign summaries, leave-one-cluster-out mechanism
+  predictions, and 16 paired reversed-minus-aligned assignment effects were
+  written.
+- All JSON outputs parse under a strict parser that rejects NaN and Infinity.
+
+ARTIFACT INTEGRITY: PASS
+- Every generated CSV was parsed by pandas.
+- Every generated JSON was parsed strictly.
+- Every generated PDF was opened with strict pypdf parsing.
+- Every generated checkpoint/probe tensor artifact was loaded by PyTorch.
+- Row schemas include run identifiers, numerical censoring, solver controls,
+  optimizer-state provenance, gradient norms, and step sizes where applicable.
+
+PACKAGE VALIDATION: PASS
+- Editable installation with --no-deps and --no-build-isolation succeeded.
+- A PEP 517 wheel was built and installed into a clean target directory.
+- The console/module CLI exposed train, geometry, interventions, dynamics,
+  continuation, synthetic, smoke, checkpoint-sweep, and aggregate commands.
+- The final wheel checksum is recorded in the release archive's SHA256SUMS.txt.
+
+MANUSCRIPT INTEGRATION: PASS
+- The manuscript structural guard and all eight numerical manuscript
+  validators passed after integration.
+- A clean LaTeX build produced the 32-page canonical PDF.
+- The final LaTeX log contains no undefined reference/citation, package
+  warning, or overfull/underfull box detected by the release scans.
+
+SCIENTIFIC BOUNDARY
+- The runs above are deterministic synthetic and CPU smoke validations of the
+  implementation.
+- They do not constitute the proposed multi-seed, multi-scale Transformer/ViT
+  experiment, do not establish network typicality, and do not support a claim
+  of online optimizer or wall-clock dominance.
+- Full-scale confirmatory experiments require user-supplied checkpoints,
+  fixed probe datasets, GPU resources, and prespecified seed/model grids.

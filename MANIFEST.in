@@ -1,0 +1,10 @@
+include README.md RUNBOOK_KO.md OUTPUT_SCHEMA.md VERSION_HARDENED
+include CHANGELOG_v1.1.0.md CHANGELOG_v1.2.0.md VERIFICATION_REPORT_v1.2.0.md
+recursive-include configs *.yaml
+recursive-include docs *.md
+recursive-include examples *.py
+recursive-include scripts *.py *.sh
+recursive-include tests *.py
+global-exclude *.py[cod]
+global-exclude __pycache__
+prune outputs

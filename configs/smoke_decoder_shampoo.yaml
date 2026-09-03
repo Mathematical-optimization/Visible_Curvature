@@ -1,0 +1,100 @@
+run:
+  name: smoke-decoder-shampoo
+  seed: 11
+  device: cpu
+  dtype: float64
+  deterministic: true
+model:
+  family: decoder
+  checkpoint: null
+  kwargs:
+    vocab_size: 12
+    max_seq_len: 6
+    d_model: 6
+    n_heads: 2
+    n_layers: 1
+    mlp_ratio: 2
+    dropout: 0.0
+data:
+  family: synthetic_language
+  path: null
+  num_examples: 4
+  batch_size: 2
+  kwargs:
+    seq_len: 5
+    vocab_size: 12
+blocks:
+  include:
+  - blocks\.0\.q_proj\.weight$
+  exclude: []
+  min_numel: 2
+  max_numel: 128
+  tile_rows: null
+  tile_cols: null
+curvature:
+  kind: fisher
+  shift: 0.001
+  exact_max_dim: 128
+  lanczos_steps: 12
+  lanczos_starts: 2
+  positive_threshold: 1.0e-10
+  residual_tolerance: 1.0e-06
+  slq_probes: 2
+  slq_steps: 8
+moments:
+  centered: true
+  backend: loop
+  accumulation_dtype: float64
+  max_examples: 4
+geometry:
+  alpha_values:
+  - 0.25
+  - 0.5
+  damping_ratios:
+  - 0.0
+  - 0.01
+  - 1.0
+  adam_damping: 1.0e-08
+  response_vectors: 8
+  sign_threshold: 0.22314355131420976
+  exact_condition_max_dim: 128
+  shampoo_damping_ratio: 0.001
+  random_assignment_repeats: 1
+  dynamics_steps: 4
+  grafting_scales:
+  - 0.1
+  - 1.0
+  - 10.0
+training:
+  optimizer: shampoo
+  steps: 2
+  learning_rate: 0.005
+  weight_decay: 0.0
+  checkpoint_steps:
+  - 0
+  - 1
+  - 2
+  root_frequency: 1
+  beta1: 0.9
+  beta2: 0.99
+  epsilon: 1.0e-08
+  alpha: 0.25
+  grafting: adam
+output_dir: experiments/outputs
+continuation:
+  steps: 3
+  step_fraction: 0.5
+  preconditioners:
+  - identity
+  - adam
+  - shampoo_0.25
+  - shampoo_0.5
+  - optimizer_state
+sweep:
+  run_interventions: false
+  run_dynamics: false
+  run_continuations: false
+  staleness_checkpoint_lags:
+  - 0
+  - 1
+  staleness_alpha: 0.25
